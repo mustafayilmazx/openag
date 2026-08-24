@@ -119,6 +119,24 @@ function getAppRoot(): string | null {
       path.join(home, ".local", "share", "Antigravity", "resources", "app"),
       path.join(home, ".local", "share", "Antigravity IDE", "resources", "app"),
     );
+
+    if (fs.existsSync("/mnt/c/Users")) {
+      try {
+        const users = fs.readdirSync("/mnt/c/Users", { withFileTypes: true });
+        for (const u of users) {
+          if (u.isDirectory() && u.name !== "Public" && u.name !== "Default" && !u.name.startsWith(".")) {
+            candidates.push(
+              path.join("/mnt/c/Users", u.name, "AppData", "Local", "Programs", "Antigravity IDE", "resources", "app"),
+              path.join("/mnt/c/Users", u.name, "AppData", "Local", "Programs", "Antigravity", "resources", "app"),
+            );
+          }
+        }
+      } catch { /* ignore */ }
+    }
+    candidates.push(
+      "/mnt/c/Program Files/Antigravity IDE/resources/app",
+      "/mnt/c/Program Files/Antigravity/resources/app",
+    );
   }
 
   for (const cand of candidates) {

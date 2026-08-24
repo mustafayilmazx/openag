@@ -1,7 +1,25 @@
+import * as fs from "node:fs";
 import { execFile, execFileSync, spawnSync } from "node:child_process";
 import * as os from "node:os";
 
 export const KEYRING_TARGET = "gemini:antigravity";
+
+export function isWsl(): boolean {
+  if (process.platform !== "linux") return false;
+  if (process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP) return true;
+  try {
+    const version = fs.readFileSync("/proc/version", "utf8");
+    return /microsoft|wsl/i.test(version);
+  } catch {
+    return false;
+  }
+}
+
+export function getPsExecutable(): string {
+  if (process.platform === "win32") return "powershell";
+  if (isWsl()) return "powershell.exe";
+  return "powershell";
+}
 
 export interface KeyringToken {
   access_token: string;
@@ -120,7 +138,7 @@ export const NativeKeyring = {
   read(target = KEYRING_TARGET): Promise<KeyringPayload | null> {
     return new Promise((resolve) => {
       const platform = os.platform();
-      if (platform === "win32") {
+      if (platform === "win32" || (platform === "linux" && isWsl())) {
         const psScript = `
 Add-Type -TypeDefinition @"
 ${WIN32_CSHARP_HELPER}
@@ -129,7 +147,7 @@ $v = [WinCred]::Read('${target}')
 if ($v) { [Console]::Out.Write($v) }
 `;
         execFile(
-          "powershell",
+          getPsExecutable(),
           ["-NoProfile", "-NonInteractive", "-EncodedCommand", encodeBase64Command(psScript)],
           { windowsHide: true, timeout: 5000 },
           (err, stdout) => {
@@ -173,7 +191,7 @@ if ($v) { [Console]::Out.Write($v) }
   readSync(target = KEYRING_TARGET): KeyringPayload | null {
     const platform = os.platform();
     try {
-      if (platform === "win32") {
+      if (platform === "win32" || (platform === "linux" && isWsl())) {
         const psScript = `
 Add-Type -TypeDefinition @"
 ${WIN32_CSHARP_HELPER}
@@ -182,7 +200,7 @@ $v = [WinCred]::Read('${target}')
 if ($v) { [Console]::Out.Write($v) }
 `;
         const out = execFileSync(
-          "powershell",
+          getPsExecutable(),
           ["-NoProfile", "-NonInteractive", "-EncodedCommand", encodeBase64Command(psScript)],
           { windowsHide: true, timeout: 5000, encoding: "utf8" },
         );
@@ -214,7 +232,7 @@ if ($v) { [Console]::Out.Write($v) }
       const jsonStr = JSON.stringify(payload);
       const platform = os.platform();
 
-      if (platform === "win32") {
+      if (platform === "win32" || (platform === "linux" && isWsl())) {
         const base64Secret = Buffer.from(jsonStr, "utf8").toString("base64");
         const psScript = `
 Add-Type -TypeDefinition @"
@@ -225,7 +243,7 @@ $ok = [WinCred]::Write('${target}', 'gemini', $raw)
 if ($ok) { [Console]::Out.Write('OK') } else { [Console]::Out.Write('FAIL') }
 `;
         execFile(
-          "powershell",
+          getPsExecutable(),
           ["-NoProfile", "-NonInteractive", "-EncodedCommand", encodeBase64Command(psScript)],
           { windowsHide: true, timeout: 5000 },
           (err, stdout) => {
@@ -258,7 +276,7 @@ if ($ok) { [Console]::Out.Write('OK') } else { [Console]::Out.Write('FAIL') }
   delete(target = KEYRING_TARGET): Promise<boolean> {
     return new Promise((resolve) => {
       const platform = os.platform();
-      if (platform === "win32") {
+      if (platform === "win32" || (platform === "linux" && isWsl())) {
         const psScript = `
 Add-Type -TypeDefinition @"
 ${WIN32_CSHARP_HELPER}
@@ -267,7 +285,7 @@ $ok = [WinCred]::Delete('${target}')
 if ($ok) { [Console]::Out.Write('OK') } else { [Console]::Out.Write('FAIL') }
 `;
         execFile(
-          "powershell",
+          getPsExecutable(),
           ["-NoProfile", "-NonInteractive", "-EncodedCommand", encodeBase64Command(psScript)],
           { windowsHide: true, timeout: 5000 },
           (err, stdout) => {
