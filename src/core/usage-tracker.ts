@@ -3,7 +3,7 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import type { ContextUsage } from "../types.js";
 import { aggregateBlockTokens, readGenMetadata } from "./gen-metadata-reader.js";
-import { BRAIN_DIR, CONV_DIR, withSqliteDb } from "./sqlite-utils.js";
+import { BRAIN_DIR, getConvDirs, resolveTranscriptPath, withSqliteDb } from "./sqlite-utils.js";
 import {
   extractAntigravityTitle,
   formatDynamicModelName,
@@ -60,7 +60,7 @@ export class UsageTracker {
   private readonly dbWorkspaceCache = new Map<string, { mtime: number; size: number; uri: string | null }>();
 
   private transcriptWatcher: fs.FSWatcher | null = null;
-  private convDirWatcher: fs.FSWatcher | null = null;
+  private convDirWatchers: fs.FSWatcher[] = [];
   private pollInterval: NodeJS.Timeout | null = null;
   private debounceTimer: NodeJS.Timeout | null = null;
 
@@ -126,7 +126,9 @@ export class UsageTracker {
 
     if (convId !== this.activeConversationId) {
       this.activeConversationId = convId;
-      this.activeTranscriptPath = path.join(BRAIN_DIR, convId, ".system_generated", "logs", "transcript.jsonl");
+      this.activeTranscriptPath =
+        resolveTranscriptPath(convId) ||
+        path.join(BRAIN_DIR, convId, ".system_generated", "logs", "transcript.jsonl");
       this.lastProcessedLineCount = 0;
       this.lastProcessedPath = null;
       this.attachTranscriptWatcher();
@@ -136,13 +138,16 @@ export class UsageTracker {
   }
 
   private initWatchers(): void {
-    try {
-      if (fs.existsSync(CONV_DIR)) {
-        this.convDirWatcher = fs.watch(CONV_DIR, { persistent: false }, () => {
-          this.scheduleCompute();
-        });
-      }
-    } catch { /* ignore watcher error */ }
+    for (const dir of getConvDirs()) {
+      try {
+        if (fs.existsSync(dir)) {
+          const watcher = fs.watch(dir, { persistent: false }, () => {
+            this.scheduleCompute();
+          });
+          this.convDirWatchers.push(watcher);
+        }
+      } catch { /* ignore watcher error */ }
+    }
   }
 
   private attachTranscriptWatcher(): void {
@@ -212,41 +217,41 @@ export class UsageTracker {
   }
 
   private resolveActiveConversationId(): string | null {
-    if (!fs.existsSync(CONV_DIR)) return null;
+    const convDirs = getConvDirs();
+    const fileStats: Array<{ name: string; fullPath: string; mtime: number }> = [];
 
-    try {
-      const files = fs.readdirSync(CONV_DIR).filter((f) => f.endsWith(".db"));
-      if (files.length === 0) return null;
+    for (const dir of convDirs) {
+      if (!fs.existsSync(dir)) continue;
+      try {
+        const files = fs.readdirSync(dir).filter((f) => f.endsWith(".db"));
+        for (const f of files) {
+          const fullPath = path.join(dir, f);
+          try {
+            const st = fs.statSync(fullPath);
+            fileStats.push({ name: f, fullPath, mtime: st.mtimeMs });
+          } catch { /* ignore */ }
+        }
+      } catch { /* ignore */ }
+    }
 
-      const fileStats: Array<{ name: string; fullPath: string; mtime: number }> = [];
-      for (const f of files) {
-        const fullPath = path.join(CONV_DIR, f);
-        try {
-          const st = fs.statSync(fullPath);
-          fileStats.push({ name: f, fullPath, mtime: st.mtimeMs });
-        } catch { /* ignore */ }
-      }
+    if (fileStats.length === 0) return null;
+    fileStats.sort((a, b) => b.mtime - a.mtime);
 
-      fileStats.sort((a, b) => b.mtime - a.mtime);
-
-      if (this.workspacePaths.length > 0) {
-        for (const item of fileStats) {
-          const wsUri = this.extractWorkspaceUriFromDb(item.fullPath);
-          if (wsUri) {
-            const isMatch = this.workspacePaths.some(
-              (wp) => wsUri.includes(wp) || wp.includes(wsUri),
-            );
-            if (isMatch) {
-              return item.name.replace(".db", "");
-            }
+    if (this.workspacePaths.length > 0) {
+      for (const item of fileStats) {
+        const wsUri = this.extractWorkspaceUriFromDb(item.fullPath);
+        if (wsUri) {
+          const isMatch = this.workspacePaths.some(
+            (wp) => wsUri.includes(wp) || wp.includes(wsUri),
+          );
+          if (isMatch) {
+            return item.name.replace(".db", "");
           }
         }
       }
-
-      return fileStats[0]?.name.replace(".db", "") ?? null;
-    } catch {
-      return null;
     }
+
+    return fileStats[0]?.name.replace(".db", "") ?? null;
   }
 
   private async computeContextUsage(): Promise<void> {
@@ -360,10 +365,12 @@ export class UsageTracker {
       this.transcriptWatcher.close();
       this.transcriptWatcher = null;
     }
-    if (this.convDirWatcher) {
-      this.convDirWatcher.close();
-      this.convDirWatcher = null;
+    for (const watcher of this.convDirWatchers) {
+      try {
+        watcher.close();
+      } catch { /* ignore */ }
     }
+    this.convDirWatchers = [];
     this.dbWorkspaceCache.clear();
     this.onContextChangeEmitter.dispose();
     this.onRateLimitEmitter.dispose();
