@@ -55,7 +55,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
   statsManager = new StatsManager(context, log);
   usageTracker = new UsageTracker(statsManager);
   tokenManager = new TokenManager(context, log, usageTracker);
-  statusBar = new StatusBarHUD(context, statsManager);
+  statusBar = new StatusBarHUD(context, statsManager, tokenManager);
 
   quotaMonitor = new QuotaMonitor(
     tokenManager,

@@ -23,6 +23,7 @@ const fmtTime = (s?: string): string => {
 };
 
 import type { StatsManager } from "../core/stats-manager.js";
+import type { TokenManager } from "../core/token-manager.js";
 
 export class StatusBarHUD {
   private readonly item: vscode.StatusBarItem;
@@ -38,12 +39,26 @@ export class StatusBarHUD {
   constructor(
     context: vscode.ExtensionContext,
     private readonly statsManager?: StatsManager,
+    private readonly tokenManager?: TokenManager,
   ) {
     this.item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
     this.item.command = "openag.openPanel";
     context.subscriptions.push(this.item);
     this.scheduleRender();
     this.item.show();
+  }
+
+  private getDisplayAccount(): string {
+    const isHidden = this.tokenManager?.getConfig()?.hideEmail ?? false;
+    if (!isHidden) return this.currentEmail;
+    const accounts = this.tokenManager?.getAccounts() ?? [];
+    const idx = accounts.findIndex((a) => a.email.toLowerCase() === this.currentEmail.toLowerCase());
+    if (idx >= 0) {
+      const acc = accounts[idx];
+      if (acc?.alias) return acc.alias;
+      return `Account ${idx + 1}`;
+    }
+    return "Account";
   }
 
   public updateAccount(email: string, tier: AccountTier, isEnabled = true, quota?: AccountQuota | null): void {
@@ -140,7 +155,8 @@ export class StatusBarHUD {
         ? new vscode.ThemeColor("statusBarItem.warningBackground")
         : undefined;
 
-    const md = new vscode.MarkdownString(`$(account) **Active Account**: \`${this.currentEmail}\` [${tierBadge}]\n\n`, true);
+    const displayAccount = this.getDisplayAccount();
+    const md = new vscode.MarkdownString(`$(account) **Active Account**: \`${displayAccount}\` [${tierBadge}]\n\n`, true);
     md.isTrusted = true;
     md.supportThemeIcons = true;
     if (families.length > 0) {
