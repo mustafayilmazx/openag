@@ -119,8 +119,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
       const ideEmail = await USSBridge.getIdeEmail();
       if (ideEmail && ideTokens?.accessToken && tokenManager) {
         const accounts = tokenManager.getAccounts();
-        const exists = accounts.some((a) => a.email.toLowerCase() === ideEmail.toLowerCase());
-        if (!exists) {
+        const existing = accounts.find((a) => a.email.toLowerCase() === ideEmail.toLowerCase());
+        if (!existing) {
           log(`[IDE Sync] Auto-importing new account from IDE: ${ideEmail}`);
           await tokenManager.addOrUpdateAccount({
             email: ideEmail,
@@ -132,6 +132,17 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
             sortOrder: accounts.length,
           });
           void quotaMonitor?.pollAllAccounts();
+        } else if (ideTokens.accessToken !== existing.accessToken || (ideTokens.refreshToken && ideTokens.refreshToken !== existing.refreshToken)) {
+          log(`[IDE Sync] Updating credentials from IDE for: ${ideEmail}`);
+          await tokenManager.addOrUpdateAccount({
+            ...existing,
+            accessToken: ideTokens.accessToken,
+            refreshToken: ideTokens.refreshToken || existing.refreshToken || "",
+            tokenExpiresAt: ideTokens.expiryDateSeconds || Math.floor(Date.now() / 1000) + 3600,
+            status: "active",
+            health: "healthy",
+            healthError: undefined,
+          });
         }
       }
     } catch (e: unknown) {

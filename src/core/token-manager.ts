@@ -562,15 +562,6 @@ export class TokenManager {
         tokenType: "Bearer",
         isGcpTos: false,
       });
-      try {
-        await NativeKeyring.write({
-          accessToken: token,
-          refreshToken: active.refreshToken || "",
-          expiryDateSeconds: active.tokenExpiresAt,
-        });
-      } catch (keyringErr: unknown) {
-        this.log(`[Keyring] Failed to sync to OS keyring: ${keyringErr instanceof Error ? keyringErr.message : String(keyringErr)}`);
-      }
       void (async () => {
         try {
           await fetch("https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist", {
