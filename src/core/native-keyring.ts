@@ -1,5 +1,5 @@
-import * as fs from "node:fs";
 import { execFile, execFileSync, spawnSync } from "node:child_process";
+import * as fs from "node:fs";
 import * as os from "node:os";
 
 export const KEYRING_TARGET = "gemini:antigravity";

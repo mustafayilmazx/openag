@@ -14,7 +14,6 @@ import {
   type PoolRole,
   type RotationStrategy,
 } from "../types.js";
-import { NativeKeyring } from "./native-keyring.js";
 import { OAuthFlow } from "./oauth-flow.js";
 import { exportPool, importPool } from "./pool-crypto.js";
 import type { UsageTracker } from "./usage-tracker.js";
