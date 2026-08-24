@@ -50,7 +50,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
   statsManager = new StatsManager(context, log);
   usageTracker = new UsageTracker(statsManager);
   tokenManager = new TokenManager(context, log, usageTracker);
-  statusBar = new StatusBarHUD(context);
+  statusBar = new StatusBarHUD(context, statsManager);
 
   quotaMonitor = new QuotaMonitor(
     tokenManager,
@@ -87,6 +87,17 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
     statusBar?.updateContext(ctx);
     if (tokenManager && quotaMonitor) {
       void tokenManager.autoSelectHighestQuota(quotaMonitor.getAllQuotas(), `model ${ctx.model}`, ctx.model);
+    }
+  });
+
+  usageTracker.onRateLimit(async (evt) => {
+    log(`[RateLimit Intercept] 429/RESOURCE_EXHAUSTED detected on ${evt.model}. Initiating immediate failover...`);
+    if (tokenManager && quotaMonitor) {
+      const active = tokenManager.getActiveAccount();
+      if (active) {
+        quotaMonitor.markAccountExhausted(active.email, evt.model);
+        await tokenManager.autoSelectHighestQuota(quotaMonitor.getAllQuotas(), "rate_limit_failover", evt.model);
+      }
     }
   });
   logManager.onLog(() => webviewProvider?.refresh());
@@ -214,6 +225,148 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
         void vscode.window.showErrorMessage(`OpenAG: ${res.message}`);
       }
       webviewProvider?.refresh();
+    }),
+    vscode.commands.registerCommand("openag.exportPool", async () => {
+      try {
+        if (!tokenManager || tokenManager.getAccounts().length === 0) {
+          void vscode.window.showWarningMessage("OpenAG: No accounts to export.");
+          return;
+        }
+        const passphrase = await vscode.window.showInputBox({
+          title: "OpenAG: Export Account Pool",
+          prompt: "Enter a passphrase to encrypt your account pool",
+          password: true,
+        });
+        if (!passphrase) return;
+
+        const confirmPass = await vscode.window.showInputBox({
+          title: "OpenAG: Confirm Passphrase",
+          prompt: "Re-enter your encryption passphrase",
+          password: true,
+        });
+        if (!confirmPass) return;
+        if (passphrase !== confirmPass) {
+          void vscode.window.showErrorMessage("OpenAG: Passphrases do not match.");
+          return;
+        }
+
+        const encrypted = await tokenManager.exportAllAccounts(passphrase);
+        await vscode.env.clipboard.writeText(encrypted);
+        void vscode.window.showInformationMessage(`OpenAG: Encrypted pool with ${tokenManager.getAccounts().length} accounts copied to clipboard.`);
+      } catch (e: unknown) {
+        void vscode.window.showErrorMessage(`OpenAG: Export failed - ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }),
+    vscode.commands.registerCommand("openag.importPool", async () => {
+      try {
+        if (!tokenManager) return;
+        const rawJson = await vscode.window.showInputBox({
+          title: "OpenAG: Import Account Pool",
+          prompt: "Paste the encrypted pool JSON string",
+          ignoreFocusOut: true,
+        });
+        if (!rawJson) return;
+
+        const passphrase = await vscode.window.showInputBox({
+          title: "OpenAG: Decryption Passphrase",
+          prompt: "Enter the passphrase used to encrypt this pool",
+          password: true,
+          ignoreFocusOut: true,
+        });
+        if (!passphrase) return;
+
+        const count = await tokenManager.importAccounts(rawJson, passphrase);
+        await syncIdeAuth();
+        void quotaMonitor?.pollAllAccounts();
+        void vscode.window.showInformationMessage(`OpenAG: Successfully imported ${count} accounts.`);
+        webviewProvider?.refresh();
+      } catch (e: unknown) {
+        void vscode.window.showErrorMessage(`OpenAG: Import failed - ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }),
+    vscode.commands.registerCommand("openag.quickStatus", async () => {
+      try {
+        if (!tokenManager || !quotaMonitor) return;
+        const accounts = tokenManager.getAccounts();
+        if (accounts.length === 0) {
+          const add = await vscode.window.showInformationMessage("OpenAG: No accounts in pool.", "Add Account");
+          if (add === "Add Account") void vscode.commands.executeCommand("openag.addAccount");
+          return;
+        }
+
+        const quotas = quotaMonitor.getAllQuotas();
+        const activeEmail = tokenManager.getActiveEmail();
+
+        const items: (vscode.QuickPickItem & { email?: string; isAction?: boolean; action?: () => void })[] = accounts.map((acc) => {
+          const isAct = acc.email.toLowerCase() === activeEmail.toLowerCase();
+          const q = quotas[acc.email.toLowerCase()];
+          const fams = q?.families || [];
+          const geminiFam = fams.find((f) => f.key === "gemini");
+          const claudeFam = fams.find((f) => f.key === "claude");
+
+          const gemini5h = geminiFam?.limit5h?.percent ?? geminiFam?.percent ?? 100;
+          const claude5h = claudeFam?.limit5h?.percent ?? claudeFam?.percent ?? 100;
+
+          const resetTimeStr = (iso?: string) => {
+            if (!iso) return "";
+            const d = new Date(iso);
+            const diff = d.getTime() - Date.now();
+            if (diff <= 0) return "ready";
+            const mins = Math.floor(diff / 60000);
+            const hrs = Math.floor(mins / 60);
+            const remMins = mins % 60;
+            const rel = hrs > 0 ? `${hrs}h ${remMins}m` : `${remMins}m`;
+            const clock = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+            return `${rel} (${clock})`;
+          };
+
+          const gReset = resetTimeStr(geminiFam?.limit5h?.resetTime || geminiFam?.resetTime);
+          const cReset = resetTimeStr(claudeFam?.limit5h?.resetTime || claudeFam?.resetTime);
+
+          const healthStr = acc.health && acc.health !== "healthy" ? ` | ⚠️ ${acc.health.toUpperCase()}` : "";
+          const desc = `[${(acc.tier || "pro").toUpperCase()}] ${(acc.affinity || "all").toUpperCase()} · ${(acc.role || "primary").toUpperCase()}${isAct ? " · [ACTIVE]" : ""}${healthStr}`;
+          const detail = `Gemini: ${gemini5h}%${gReset ? ` (resets ${gReset})` : ""} | Claude: ${claude5h}%${cReset ? ` (resets ${cReset})` : ""}`;
+
+          return {
+            label: `$(account) ${acc.alias ? `${acc.alias} (${acc.email})` : acc.email}`,
+            description: desc,
+            detail,
+            email: acc.email,
+          };
+        });
+
+        items.push({
+          label: "$(refresh) Refresh All Quotas",
+          description: "Poll latest quotas from Google Cloud",
+          isAction: true,
+          action: () => void vscode.commands.executeCommand("openag.refreshQuotas"),
+        });
+
+        items.push({
+          label: "$(add) Add Google Account",
+          description: "Sign in with another Google account",
+          isAction: true,
+          action: () => void vscode.commands.executeCommand("openag.addAccount"),
+        });
+
+        const selected = await vscode.window.showQuickPick(items, {
+          title: "OpenAG: Accounts & Quotas",
+          placeHolder: "Select an account to switch or choose an action",
+          matchOnDescription: true,
+          matchOnDetail: true,
+        });
+
+        if (selected) {
+          if (selected.isAction && selected.action) {
+            selected.action();
+          } else if (selected.email) {
+            await tokenManager.selectAccount(selected.email);
+            void vscode.window.showInformationMessage(`OpenAG: Switched active account to ${selected.email}`);
+          }
+        }
+      } catch (e: unknown) {
+        void vscode.window.showErrorMessage(`OpenAG: Quick Status error - ${e instanceof Error ? e.message : String(e)}`);
+      }
     }),
   );
 

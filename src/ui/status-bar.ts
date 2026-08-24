@@ -11,15 +11,18 @@ const makeBar = (p: number): string => {
 
 const fmtTime = (s?: string): string => {
   if (!s) return "";
-  const d = Date.parse(s) - Date.now();
+  const target = new Date(s);
+  const d = target.getTime() - Date.now();
   if (d <= 0 || Number.isNaN(d)) return "ready";
   const days = Math.floor(d / 864e5);
   const hrs = Math.floor((d % 864e5) / 36e5);
   const mins = Math.floor((d % 36e5) / 6e4);
-  if (days > 0) return `${days}d ${hrs}h`;
-  if (hrs > 0) return `${hrs}h ${mins}m`;
-  return `${mins}m`;
+  const rel = days > 0 ? `${days}d ${hrs}h` : hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`;
+  const localClock = target.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+  return `${rel} (${localClock})`;
 };
+
+import type { StatsManager } from "../core/stats-manager.js";
 
 export class StatusBarHUD {
   private readonly item: vscode.StatusBarItem;
@@ -32,7 +35,10 @@ export class StatusBarHUD {
   private rotateTimer: NodeJS.Timeout | null = null;
   private renderDebounce: NodeJS.Timeout | null = null;
 
-  constructor(context: vscode.ExtensionContext) {
+  constructor(
+    context: vscode.ExtensionContext,
+    private readonly statsManager?: StatsManager,
+  ) {
     this.item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
     this.item.command = "openag.openPanel";
     context.subscriptions.push(this.item);
@@ -120,10 +126,19 @@ export class StatusBarHUD {
       : families.length > 0
         ? Math.min(...families.map((f) => ((f.limitWeekly?.percent ?? 100) <= 0 ? 0 : (f.limit5h?.percent ?? f.percent ?? 100))))
         : 100;
+    const ctxPct = this.currentContext?.percent ?? 0;
     const ctxStr = this.currentContext?.limit ? ` [${fmtTokens(this.currentContext.current)}/${fmtTokens(this.currentContext.limit)}]` : "";
 
     this.item.text = `${icon} ${tierBadge}${quotaSummary ? ` (${quotaSummary})` : ""}${ctxStr}`;
-    this.item.backgroundColor = effectivePct < 20 ? new vscode.ThemeColor("statusBarItem.errorBackground") : effectivePct < 40 ? new vscode.ThemeColor("statusBarItem.warningBackground") : undefined;
+
+    const isError = effectivePct < 20 || ctxPct >= 90;
+    const isWarning = effectivePct < 40 || ctxPct >= 80;
+
+    this.item.backgroundColor = isError
+      ? new vscode.ThemeColor("statusBarItem.errorBackground")
+      : isWarning
+        ? new vscode.ThemeColor("statusBarItem.warningBackground")
+        : undefined;
 
     const md = new vscode.MarkdownString(`$(account) **Active Account**: \`${this.currentEmail}\` [${tierBadge}]\n\n`, true);
     md.isTrusted = true;
@@ -143,7 +158,14 @@ export class StatusBarHUD {
     }
     if (this.currentContext?.limit) {
       const modelLabel = this.currentContext.model ? ` (${this.currentContext.model})` : "";
-      md.appendMarkdown(`---\n\n$(server-process) **Context**${modelLabel}: ${this.currentContext.current.toLocaleString()} / ${this.currentContext.limit.toLocaleString()} (${this.currentContext.percent}%)\n\n`);
+      const ctxWarn = ctxPct >= 90 ? " **[CRITICAL]**" : ctxPct >= 80 ? " **[HIGH CONTEXT]**" : "";
+      md.appendMarkdown(`---\n\n$(server-process) **Context**${modelLabel}: ${this.currentContext.current.toLocaleString()} / ${this.currentContext.limit.toLocaleString()} (${ctxPct}%)${ctxWarn}\n\n`);
+    }
+    if (this.statsManager) {
+      const burn = this.statsManager.getBurnRate(15);
+      if (burn.tokensPerMin > 0) {
+        md.appendMarkdown(`---\n\n$(dashboard) **Burn Rate**: \`~${fmtTokens(burn.tokensPerMin)} tok/min\` (${burn.recentTurns} turns in last 15m)\n\n`);
+      }
     }
     md.appendMarkdown("---\n*Click to open OpenAG panel*");
     this.item.tooltip = md;
