@@ -14,6 +14,7 @@ import {
   type PoolRole,
   type RotationStrategy,
 } from "../types.js";
+import { NativeKeyring } from "./native-keyring.js";
 import { OAuthFlow } from "./oauth-flow.js";
 import { exportPool, importPool } from "./pool-crypto.js";
 import type { UsageTracker } from "./usage-tracker.js";
@@ -561,6 +562,15 @@ export class TokenManager {
         tokenType: "Bearer",
         isGcpTos: false,
       });
+      try {
+        await NativeKeyring.write({
+          accessToken: token,
+          refreshToken: active.refreshToken || "",
+          expiryDateSeconds: active.tokenExpiresAt,
+        });
+      } catch (keyringErr: unknown) {
+        this.log(`[Keyring] Failed to sync to OS keyring: ${keyringErr instanceof Error ? keyringErr.message : String(keyringErr)}`);
+      }
       void (async () => {
         try {
           await fetch("https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist", {

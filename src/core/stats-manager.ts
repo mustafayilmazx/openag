@@ -4,7 +4,7 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import type { BurnRateInfo, ConversationStats, DayTokenStats, HourlyTokenStats, MonthTokenStats, RequestStats, TokenBucket, TokenStatsRegistry, WeekTokenStats } from "../types.js";
 import { aggregateBlockTokens, readGenMetadata } from "./gen-metadata-reader.js";
-import { CONV_DIR, withSqliteDb } from "./sqlite-utils.js";
+import { CONV_DIR, getBrainDirs, resolveConversationDb, withSqliteDb } from "./sqlite-utils.js";
 
 const STATS_KEY = "openag_token_stats_v8";
 const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
@@ -32,7 +32,7 @@ function parseTitleFromBuffer(buf: Buffer): string | null {
 }
 
 export function extractAntigravityTitle(convId: string, fallbackPrompt = ""): string {
-  const dbPath = path.join(CONV_DIR, `${convId}.db`);
+  const dbPath = resolveConversationDb(convId) || path.join(CONV_DIR, `${convId}.db`);
   if (fs.existsSync(dbPath)) {
     const foundTitle = withSqliteDb(dbPath, (db) => {
       const rows = db.prepare("SELECT idx, step_payload FROM steps WHERE step_type = 23 ORDER BY idx ASC").all<{ idx: number; step_payload?: Uint8Array | Buffer }>();
@@ -804,84 +804,88 @@ export class StatsManager {
     };
   }
 
-  public async resetAndRecalculate(brainDir: string): Promise<void> {
+  public async resetAndRecalculate(brainDir?: string): Promise<void> {
     this.registry = { days: {}, conversations: {}, requests: [], lastUpdated: Date.now() };
     await this.context.globalState.update(STATS_KEY, this.registry);
     await this.backfillFromTranscripts(brainDir, true);
   }
 
-  public async backfillFromTranscripts(brainDir: string, force = false): Promise<void> {
-    if (!fs.existsSync(brainDir)) return;
+  public async backfillFromTranscripts(brainDir?: string, force = false): Promise<void> {
+    const targetDirs = brainDir ? [brainDir] : getBrainDirs();
 
-    try {
-      const convs = fs.readdirSync(brainDir);
-      const convList: Array<{ id: string; mtime: number }> = [];
-      for (const convId of convs) {
-        const transcriptPath = path.join(brainDir, convId, ".system_generated", "logs", "transcript.jsonl");
-        if (fs.existsSync(transcriptPath)) {
-          try {
-            const st = fs.statSync(transcriptPath);
-            convList.push({ id: convId, mtime: st.mtimeMs });
-          } catch {
-            convList.push({ id: convId, mtime: 0 });
+    for (const dir of targetDirs) {
+      if (!fs.existsSync(dir)) continue;
+
+      try {
+        const convs = fs.readdirSync(dir);
+        const convList: Array<{ id: string; mtime: number }> = [];
+        for (const convId of convs) {
+          const transcriptPath = path.join(dir, convId, ".system_generated", "logs", "transcript.jsonl");
+          if (fs.existsSync(transcriptPath)) {
+            try {
+              const st = fs.statSync(transcriptPath);
+              convList.push({ id: convId, mtime: st.mtimeMs });
+            } catch {
+              convList.push({ id: convId, mtime: 0 });
+            }
           }
         }
-      }
-      convList.sort((a, b) => b.mtime - a.mtime);
+        convList.sort((a, b) => b.mtime - a.mtime);
 
-      for (const item of convList) {
-        const convId = item.id;
-        const transcriptPath = path.join(brainDir, convId, ".system_generated", "logs", "transcript.jsonl");
+        for (const item of convList) {
+          const convId = item.id;
+          const transcriptPath = path.join(dir, convId, ".system_generated", "logs", "transcript.jsonl");
 
-        try {
-          if (!force && this.registry.conversations[convId]) {
-            continue;
-          }
+          try {
+            if (!force && this.registry.conversations[convId]) {
+              continue;
+            }
 
-          const content = await fs.promises.readFile(transcriptPath, "utf8");
-          const lines = content.split("\n").filter(Boolean);
-          if (lines.length === 0) continue;
+            const content = await fs.promises.readFile(transcriptPath, "utf8");
+            const lines = content.split("\n").filter(Boolean);
+            if (lines.length === 0) continue;
 
-          const convTitle = extractAntigravityTitle(convId);
-          const parsed = parseTranscriptLines(lines, "", convTitle);
-          const genMetrics = readGenMetadata(convId);
+            const convTitle = extractAntigravityTitle(convId);
+            const parsed = parseTranscriptLines(lines, "", convTitle);
+            const genMetrics = readGenMetadata(convId);
 
-          for (const block of parsed.completedBlocks) {
-            if (block.turnCount === 0) continue;
-            const dateObj = new Date(block.timestamp);
-            const dateStr = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, "0")}-${String(dateObj.getDate()).padStart(2, "0")}`;
+            for (const block of parsed.completedBlocks) {
+              if (block.turnCount === 0) continue;
+              const dateObj = new Date(block.timestamp);
+              const dateStr = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, "0")}-${String(dateObj.getDate()).padStart(2, "0")}`;
 
-            const agg = genMetrics
-              ? aggregateBlockTokens(genMetrics.turns, block.startTurnIdx, block.endTurnIdx)
-              : { inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0, thinkingTokens: 0, contentTokens: 0, model: "", maxGenIdx: 0 };
+              const agg = genMetrics
+                ? aggregateBlockTokens(genMetrics.turns, block.startTurnIdx, block.endTurnIdx)
+                : { inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0, thinkingTokens: 0, contentTokens: 0, model: "", maxGenIdx: 0 };
 
-            const model = agg.model
-              ? (formatDynamicModelName(agg.model) || block.detectedModel)
-              : block.detectedModel;
+              const model = agg.model
+                ? (formatDynamicModelName(agg.model) || block.detectedModel)
+                : block.detectedModel;
 
-            this.recordTokens(
-              dateStr,
-              model,
-              convId,
-              convTitle,
-              "",
-              agg.inputTokens,
-              agg.outputTokens,
-              agg.cacheHitTokens,
-              agg.cacheMissTokens,
-              block.promptText,
-              block.timestamp,
-              block.turnCount,
-              agg.thinkingTokens,
-              agg.contentTokens,
-            );
-          }
-        } catch { /* ignore */ }
-      }
+              this.recordTokens(
+                dateStr,
+                model,
+                convId,
+                convTitle,
+                "",
+                agg.inputTokens,
+                agg.outputTokens,
+                agg.cacheHitTokens,
+                agg.cacheMissTokens,
+                block.promptText,
+                block.timestamp,
+                block.turnCount,
+                agg.thinkingTokens,
+                agg.contentTokens,
+              );
+            }
+          } catch { /* ignore */ }
+        }
+      } catch { /* ignore */ }
+    }
 
-      this.pruneRequests();
-      this.schedulePersist();
-    } catch { /* ignore */ }
+    this.pruneRequests();
+    await this.persist();
   }
 
   public getBurnRate(windowMinutes = 15): BurnRateInfo {
