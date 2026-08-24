@@ -17,7 +17,7 @@ export class LogManager {
     if (this.context) {
       const saved = this.context.globalState.get<LogEntry[]>(KEY_LOGS, []);
       if (Array.isArray(saved)) {
-        this.logs = saved;
+        this.logs = saved.slice(-MAX_LOGS);
       }
     }
     this.cleanupLogs();
