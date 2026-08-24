@@ -26,6 +26,34 @@ interface QuotaResponse {
   models?: Record<string, { quotaInfo?: { remainingFraction?: number; resetTime?: string } }>;
 }
 
+export async function runWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<PromiseSettledResult<R>[]> {
+  if (items.length === 0) return [];
+  const results: PromiseSettledResult<R>[] = Array.from({ length: items.length });
+  let idx = 0;
+
+  const workerCount = Math.min(Math.max(1, limit), items.length);
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (idx < items.length) {
+      const current = idx++;
+      const item = items[current];
+      if (item === undefined) break;
+      try {
+        const val = await fn(item);
+        results[current] = { status: "fulfilled", value: val };
+      } catch (reason) {
+        results[current] = { status: "rejected", reason };
+      }
+    }
+  });
+
+  await Promise.all(workers);
+  return results;
+}
+
 export class QuotaMonitor {
   private readonly quotas = new Map<string, AccountQuota>();
   private pollTimer: NodeJS.Timeout | null = null;
@@ -76,6 +104,58 @@ export class QuotaMonitor {
     return Object.fromEntries(this.quotas);
   }
 
+  public markAccountExhausted(email: string, modelFamily?: string): void {
+    const q = this.quotas.get(email.toLowerCase());
+    if (!q) return;
+    const famKey = modelFamily
+      ? modelFamily.toLowerCase().includes("claude")
+        ? "claude"
+        : "gemini"
+      : undefined;
+
+    for (const fam of q.families) {
+      if (!famKey || fam.key === famKey) {
+        fam.percent = 0;
+        if (fam.limit5h) fam.limit5h.percent = 0;
+      }
+    }
+    for (const m of q.models) {
+      if (!famKey || m.family === famKey) {
+        m.percent = 0;
+      }
+    }
+    q.lastUpdated = Date.now();
+    this.quotas.set(email.toLowerCase(), q);
+    if (this.context) {
+      void this.context.globalState.update(KEY_QUOTA_CACHE, this.getAllQuotas());
+    }
+    this.onQuotaUpdate?.(q);
+  }
+
+  public getExhaustionEstimate(
+    tokensPerMin: number,
+    activeModel?: string,
+  ): { estMinutesLeft: number; earliestResetMinutes: number } | null {
+    if (tokensPerMin <= 0) return null;
+    const active = this.tokenManager.getActiveAccount();
+    if (!active) return null;
+    const q = this.quotas.get(active.email.toLowerCase());
+    if (!q) return null;
+
+    const info = this.tokenManager.getEffectiveQuota(active.email, this.getAllQuotas(), activeModel);
+    if (info.percent <= 0) return null;
+
+    const estimatedTokensRemaining = Math.round((info.percent / 100) * 1000000);
+    const estMinutesLeft = Math.max(1, Math.round(estimatedTokensRemaining / tokensPerMin));
+
+    const now = Date.now();
+    const earliestResetMinutes = info.resetTs > now && info.resetTs !== Infinity
+      ? Math.max(1, Math.round((info.resetTs - now) / 60000))
+      : 0;
+
+    return { estMinutesLeft, earliestResetMinutes };
+  }
+
   public async refreshAccountQuota(email: string): Promise<AccountQuota | null> {
     const acc = this.tokenManager.getAccounts().find((a) => a.email.toLowerCase() === email.toLowerCase());
     return acc ? this.fetchAccountQuota(acc) : null;
@@ -95,6 +175,7 @@ export class QuotaMonitor {
         method: "POST",
         headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json", "User-Agent": "Antigravity/2.5.5" },
         body: JSON.stringify({ project: account.projectId || "" }),
+        signal: AbortSignal.timeout(10000),
       });
 
       if (!res.ok) {
@@ -212,13 +293,16 @@ export class QuotaMonitor {
         method: "POST",
         headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json", "User-Agent": "Antigravity/2.5.5" },
         body: JSON.stringify({}),
+        signal: AbortSignal.timeout(10000),
       });
       if (!res.ok) return;
       // SAFETY: Available models endpoint response structure
       const data = (await res.json()) as { models?: Record<string, { maxTokens?: number }> };
       if (data.models) this.usageTracker?.registerModelMetadata(data.models);
       this.modelsDiscovered = true;
-    } catch { /* ignore discovery error */ }
+    } catch (e: unknown) {
+      this.log(`Model discovery skipped: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   private async detectTier(account: Account, accessToken: string): Promise<AccountTier> {
@@ -227,6 +311,7 @@ export class QuotaMonitor {
         method: "POST",
         headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json", "User-Agent": "Antigravity/2.5.5" },
         body: CODE_ASSIST_BODY,
+        signal: AbortSignal.timeout(10000),
       });
       if (!res.ok) return account.tier || "pro";
       // SAFETY: Code assist subscription tier response payload
@@ -237,7 +322,8 @@ export class QuotaMonitor {
       if (raw.includes("plus")) return "plus";
       if (raw.includes("free")) return "free";
       return account.tier || "pro";
-    } catch {
+    } catch (e: unknown) {
+      this.log(`Tier detection fallback for ${account.email}: ${e instanceof Error ? e.message : String(e)}`);
       return account.tier || "pro";
     }
   }
@@ -256,7 +342,7 @@ export class QuotaMonitor {
 
   public async pollAllAccounts(): Promise<void> {
     const accounts = this.tokenManager.getAccounts().filter((acc) => acc.status !== "disabled");
-    await Promise.allSettled(accounts.map((acc) => this.fetchAccountQuota(acc, true)));
+    await runWithConcurrency(accounts, 4, (acc) => this.fetchAccountQuota(acc, true));
     if (this.tokenManager.isExtensionEnabled() && this.tokenManager.isRotationEnabled()) {
       const model = this.usageTracker?.getActiveModel();
       void this.tokenManager.autoSelectHighestQuota(this.getAllQuotas(), "poll all accounts completion", model);

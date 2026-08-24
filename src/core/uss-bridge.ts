@@ -50,6 +50,14 @@ const S1 = String.fromCharCode(71, 79, 67, 83, 80, 88);
 const S2 = "K58FWR486LdLJ1mLB8sXC4z6qDAf";
 const DEFAULT_CLIENT_SECRET = `${S1}-${S2}`;
 
+export function decodeBase64Url(str: string): Buffer {
+  let base64 = str.replace(/-/g, "+").replace(/_/g, "/");
+  while (base64.length % 4 !== 0) {
+    base64 += "=";
+  }
+  return Buffer.from(base64, "base64");
+}
+
 export const USSBridge = {
   getClientCredentials(): ClientCredentials {
     try {
@@ -91,11 +99,9 @@ export const USSBridge = {
         try { api.refresh?.(); } catch { /* ignore */ }
         try { api.notifyChange?.(); } catch { /* ignore */ }
         try { api.onOAuthTokenChanged?.(); } catch { /* ignore */ }
-        try { api.restartUserStatusUpdater?.(); } catch { /* ignore */ }
 
         const us = api.UserStatus;
         if (us) {
-          try { us.restartUserStatusUpdater?.(); } catch { /* ignore */ }
           try { us.updateUserStatus?.(); } catch { /* ignore */ }
           try { us.refresh?.(); } catch { /* ignore */ }
           try { us.sync?.(); } catch { /* ignore */ }
@@ -103,7 +109,6 @@ export const USSBridge = {
       }
 
       for (const cmd of [
-        "antigravity.restartLanguageServer",
         "antigravity.refreshAuth",
         "antigravity.refreshStatus",
         "antigravity.syncState",
@@ -122,17 +127,22 @@ export const USSBridge = {
     try {
       const parts = accessToken.split(".");
       if (parts.length === 3 && parts[1]) {
-        // SAFETY: JWT payload segment decoded from base64
-        const payload = JSON.parse(Buffer.from(parts[1], "base64").toString("utf-8")) as { email?: string };
+        // SAFETY: RFC 7515 JWT payload segment decoded from base64url
+        const decoded = decodeBase64Url(parts[1]).toString("utf-8");
+        const payload = JSON.parse(decoded) as { email?: string };
         if (payload.email) return payload.email;
       }
-      const res = await fetch(`https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(accessToken)}`);
+      const res = await fetch(`https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(accessToken)}`, {
+        signal: AbortSignal.timeout(5000),
+      });
       if (res.ok) {
         // SAFETY: Google OAuth tokeninfo JSON endpoint returns optional email string
         const data = (await res.json()) as { email?: string };
         if (data.email) return data.email;
       }
-    } catch { /* ignore */ }
+    } catch {
+      return null;
+    }
     return null;
   },
 

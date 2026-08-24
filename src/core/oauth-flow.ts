@@ -26,6 +26,7 @@ async function requestToken(params: URLSearchParams): Promise<OAuthTokens> {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: params.toString(),
+    signal: AbortSignal.timeout(15000),
   });
   if (!res.ok) throw new Error(`Token request failed HTTP ${res.status}: ${await res.text()}`);
   // SAFETY: Google OAuth token endpoint response payload
@@ -39,7 +40,10 @@ async function requestToken(params: URLSearchParams): Promise<OAuthTokens> {
 }
 
 async function fetchUserEmail(accessToken: string): Promise<string> {
-  const res = await fetch(GOOGLE_USERINFO_URL, { headers: { Authorization: `Bearer ${accessToken}` } });
+  const res = await fetch(GOOGLE_USERINFO_URL, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    signal: AbortSignal.timeout(15000),
+  });
   if (!res.ok) throw new Error(`Failed to fetch user email (HTTP ${res.status})`);
   // SAFETY: Google userinfo endpoint returns profile with email string
   const data = (await res.json()) as { email?: string };

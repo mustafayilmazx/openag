@@ -34,3 +34,24 @@ export function loadSqlite(): SqliteModule | null {
   return cachedSqlite;
 }
 
+export function withSqliteDb<T>(dbPath: string, fn: (db: SqliteDb) => T): T | null {
+  const sqlite = loadSqlite();
+  if (!sqlite) return null;
+
+  let db: SqliteDb | null = null;
+  try {
+    db = new sqlite.DatabaseSync(dbPath, { readOnly: true, open: true });
+    return fn(db);
+  } catch {
+    return null;
+  } finally {
+    if (db) {
+      try {
+        db.close();
+      } catch {
+        // Suppress closing error if already closed or invalid
+      }
+    }
+  }
+}
+
