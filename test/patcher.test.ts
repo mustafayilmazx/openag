@@ -13,6 +13,12 @@ describe("AutoRunPatcher modular patch transformations", () => {
     // Nonexistent override is safely ignored
     expect(AutoRunPatcher.getAppRoot()).not.toBe("/nonexistent/custom/path");
     AutoRunPatcher.setAppRootOverride(null);
+
+    const root = AutoRunPatcher.getAppRoot();
+    if (root) {
+      expect(typeof root).toBe("string");
+      expect(root.length).toBeGreaterThan(0);
+    }
   });
   test("generates valid syntax for autorun in AMD bundle", () => {
     const original = `

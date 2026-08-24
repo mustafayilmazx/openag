@@ -1,7 +1,7 @@
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { OpenAGErrorCode, type PatcherStatus, type PatchItem, PatcherError } from "../types.js";
+import { OpenAGErrorCode, PatcherError, type PatcherStatus, type PatchItem } from "../types.js";
 
 export interface PatchResult {
   success: boolean;
@@ -53,11 +53,35 @@ function getAppRoot(): string | null {
     // oxlint-disable-next-line @typescript-eslint/no-require-imports
     const vscode = require("vscode") as typeof import("vscode") | undefined;
     const envAppRoot = vscode?.env?.appRoot;
-    if (envAppRoot && fs.existsSync(path.join(envAppRoot, "out", "vs", "workbench", "workbench.desktop.main.js"))) {
-      cachedAppRoot = envAppRoot;
-      return envAppRoot;
+    if (envAppRoot) {
+      if (fs.existsSync(path.join(envAppRoot, "out", "vs", "workbench", "workbench.desktop.main.js"))) {
+        cachedAppRoot = envAppRoot;
+        return envAppRoot;
+      }
+      const envRes = path.join(envAppRoot, "resources", "app");
+      if (fs.existsSync(path.join(envRes, "out", "vs", "workbench", "workbench.desktop.main.js"))) {
+        cachedAppRoot = envRes;
+        return envRes;
+      }
     }
   } catch { /* ignore */ }
+
+  if (process.execPath) {
+    try {
+      const execDir = path.dirname(process.execPath);
+      const execCandidates = [
+        path.join(execDir, "resources", "app"),
+        path.join(execDir, "..", "Resources", "app"),
+        path.join(execDir, "app"),
+      ];
+      for (const cand of execCandidates) {
+        if (fs.existsSync(path.join(cand, "out", "vs", "workbench", "workbench.desktop.main.js"))) {
+          cachedAppRoot = cand;
+          return cand;
+        }
+      }
+    } catch { /* ignore */ }
+  }
 
   const candidates: string[] = [];
 
