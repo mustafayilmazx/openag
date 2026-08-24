@@ -13,6 +13,8 @@ type WebviewMessage =
   | { action: "addAccount"; payload?: undefined }
   | { action: "refreshQuotas"; payload?: undefined }
   | { action: "toggleAccount"; payload: { email: string; enabled: boolean } }
+  | { action: "updateAccountMeta"; payload: { email: string; alias?: string; affinity?: import("../types.js").ModelAffinity; role?: import("../types.js").PoolRole } }
+  | { action: "reauthAccount"; payload: string }
   | { action: "refreshAccount"; payload: string }
   | { action: "removeAccount"; payload: string }
   | { action: "clearLogs"; payload?: undefined }
@@ -121,6 +123,7 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
             conversations: conversationsList,
             requests: requestsList,
             allTime: allTimeSummary,
+            burnRate: this.statsManager?.getBurnRate(15) || { tokensPerMin: 0, recentTurns: 0 },
           },
         },
       });
@@ -147,6 +150,24 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
             if (message.payload) {
               await this.tokenManager.toggleAccountEnabled(message.payload.email, message.payload.enabled);
               void this.quotaMonitor.pollAllAccounts();
+              this.refresh();
+            }
+            break;
+          case "updateAccountMeta":
+            if (message.payload) {
+              await this.tokenManager.updateAccountMeta(message.payload.email, message.payload);
+              this.refresh();
+            }
+            break;
+          case "reauthAccount":
+            if (message.payload) {
+              try {
+                const acc = await this.tokenManager.reauthAccount(message.payload);
+                void this.quotaMonitor.refreshAccountQuota(acc.email);
+                void vscode.window.showInformationMessage(`OpenAG: Re-authenticated ${acc.email}`);
+              } catch (e: unknown) {
+                void vscode.window.showErrorMessage(`OpenAG: Re-auth failed - ${e instanceof Error ? e.message : String(e)}`);
+              }
               this.refresh();
             }
             break;
@@ -220,6 +241,7 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
   --cached: #a855f7;
   --input-col: #3b82f6;
   --output-col: #10b981;
+  --thinking-col: #f59e0b;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.15) transparent; }
 ::-webkit-scrollbar { width: 4px; height: 4px; }
@@ -232,6 +254,8 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); padd
 
 .row { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; }
 .badge { background: var(--accent); color: #fff; font-weight: 700; font-size: 10px; padding: 2px 6px; border-radius: 4px; flex-shrink: 0; }
+.info-badge { display: inline-flex; align-items: center; justify-content: center; width: 13px; height: 13px; border-radius: 50%; background: rgba(255,255,255,.1); color: var(--dim); font-size: 9px; font-weight: 700; font-family: var(--mono); cursor: help; user-select: none; border: 1px solid var(--border); transition: background .12s, color .12s; }
+.info-badge:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
 .sec-head { font-size: 10.5px; font-weight: 600; color: var(--dim); margin-top: 2px; display: flex; align-items: center; justify-content: space-between; }
 
 .btn-row { display: flex; gap: 4px; align-items: center; justify-content: flex-end; flex-shrink: 0; }
@@ -266,6 +290,10 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); padd
 .tier-tag { font-size: 8.5px; font-weight: 700; padding: 1px 4px; border-radius: 3px; text-transform: uppercase; background: var(--badge-bg); color: var(--badge-fg); flex-shrink: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; }
 .active-tag { font-size: 8.5px; font-weight: 700; padding: 1px 4px; border-radius: 3px; background: rgba(16,185,129,.15); color: var(--success); border: 1px solid rgba(16,185,129,.4); flex-shrink: 0; }
 .dis-tag { font-size: 8.5px; font-weight: 700; padding: 1px 4px; border-radius: 3px; background: rgba(255,255,255,.08); color: var(--dim); flex-shrink: 0; }
+.chip-tag { font-size: 8px; font-weight: 700; font-family: var(--mono); padding: 1px 4px; border-radius: 3px; background: rgba(255,255,255,.08); color: var(--text); border: 1px solid var(--border); cursor: pointer; user-select: none; flex-shrink: 0; }
+.chip-tag:hover { background: var(--hover); border-color: var(--accent); }
+.err-tag { font-size: 8px; font-weight: 700; font-family: var(--mono); padding: 1px 4px; border-radius: 3px; background: rgba(239,68,68,.15); color: var(--danger); border: 1px solid rgba(239,68,68,.4); flex-shrink: 0; }
+.warn-tag { font-size: 8px; font-weight: 700; font-family: var(--mono); padding: 1px 4px; border-radius: 3px; background: rgba(245,158,11,.15); color: var(--warn); border: 1px solid rgba(245,158,11,.4); flex-shrink: 0; }
 
 .quota-row { display: flex; align-items: center; justify-content: space-between; font-size: 10px; gap: 4px; min-width: 0; }
 .progress-bg { flex: 1; height: 5px; background: rgba(255,255,255,.1); border-radius: 3px; overflow: hidden; min-width: 20px; }
@@ -287,6 +315,11 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); padd
 .seg-inp { background: var(--input-col); height: 100%; transition: width .3s; }
 .seg-out { background: var(--output-col); height: 100%; transition: width .3s; }
 .seg-cac { background: var(--cached); height: 100%; transition: width .3s; }
+.seg-thk { background: var(--thinking-col); height: 100%; transition: width .3s; }
+
+g.bar-group { cursor: pointer; transition: opacity .15s; }
+g.bar-group.dimmed { opacity: 0.32; }
+g.bar-group:hover rect { filter: brightness(1.15); }
 
 .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
 .stat-box { background: var(--card); border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px; display: flex; flex-direction: column; gap: 2px; }
@@ -322,9 +355,13 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); padd
   </div>
 
   <div class="row">
-    <div style="display:flex;flex-direction:column;gap:1px;flex:1;min-width:0;">
-      <span style="font-size:10px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="Auto-routes to highest quota account">Auto-routes to highest quota</span>
-      <span id="quota-last-refreshed" style="font-size:8.5px;font-family:var(--mono);color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
+    <div style="display:flex;align-items:center;gap:4px;">
+      <span style="font-size:9.5px;color:var(--dim);font-weight:600;">Strategy:</span>
+      <select class="sort-select" id="cfg-strategy" data-action="changeStrategy" style="font-size:9.5px;padding:2px 4px;">
+        <option value="auto_highest" title="Auto-Highest: Maximizes quota throughput. Drains imminent reset windows and switches to the highest available quota.">Auto-Highest</option>
+        <option value="cache_optimized" title="Cache Optimized: Maximizes inference cache hits by sticking to the active account until quota drops below 15%, minimizing latency and token consumption.">Cache Optimized</option>
+        <option value="round_robin" title="Round Robin: Cycles through accounts evenly to distribute usage across the entire pool.">Round Robin</option>
+      </select>
     </div>
     <div class="btn-row">
       <button class="btn btn-sec" data-action="refreshQuotas" title="Refresh quotas">Refresh</button>
@@ -333,7 +370,10 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); padd
   </div>
 
   <div class="sec-head">
-    <span>Accounts Pool</span>
+    <div style="display:flex;align-items:center;gap:5px;">
+      <span>Accounts Pool</span>
+      <span class="info-badge" title="OpenAG Rotation:&#10;&#10;Active Across All Strategies:&#10;• Tier Priority: Always burns Ultra/Pro/Plus accounts before touching Free tier accounts.&#10;• Timing Priority (Drain Window): Holds active account if its 5h window resets in <=30 mins (>5% quota) to consume capacity before refill.&#10;• Reserve Gating: Uses Primary pool until all drop to <=10%, then unlocks Reserve pool.&#10;• Model Affinity: Routes prompts according to active model family (Gemini vs Claude/GPT-OSS).&#10;• 429 Interception: Sub-second auto-rotation on API rate limits.&#10;&#10;Selectable Strategies:&#10;• Auto-Highest: Selects highest quota with +1000 score bonus for <=45m refills.&#10;• Cache Optimized: Holds active account while quota >15% to maintain warm GPU prefix cache.&#10;• Round Robin: Cycles evenly across healthy accounts while respecting tier & timing.">!</span>
+    </div>
     <div style="display:flex;align-items:center;gap:4px;">
       <span id="acc-count" style="font-size:9px;font-family:var(--mono);color:var(--dim);">0 accounts</span>
       <button class="btn btn-sec btn-icon" data-action="toggleHideEmail" id="btn-hide-email" title="Toggle Hide Email" style="font-size:9px;padding:1px 5px;">Hide Email</button>
@@ -384,6 +424,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); padd
       <div style="display:flex;gap:7px;font-size:8.5px;flex-shrink:0;margin-left:auto;">
         <span style="display:flex;align-items:center;gap:3px;"><span style="width:7px;height:7px;border-radius:2px;background:var(--cached);"></span>Cache Hit</span>
         <span style="display:flex;align-items:center;gap:3px;"><span style="width:7px;height:7px;border-radius:2px;background:var(--input-col);"></span>New Input</span>
+        <span style="display:flex;align-items:center;gap:3px;"><span style="width:7px;height:7px;border-radius:2px;background:var(--thinking-col);"></span>Thinking</span>
         <span style="display:flex;align-items:center;gap:3px;"><span style="width:7px;height:7px;border-radius:2px;background:var(--output-col);"></span>Output</span>
       </div>
     </div>
@@ -462,6 +503,8 @@ var state = {
 };
 var currentView = "home";
 var statsRange = "today";
+var selectedBarIndex = null;
+var selectedBarLabel = null;
 var hideEmail = false;
 var accountsExpanded = false;
 var sortConfig = {
@@ -509,6 +552,22 @@ document.addEventListener("click", function(e) {
     navTo(target.getAttribute("data-view"));
   } else if (action === "range") {
     setStatsRange(target.getAttribute("data-range"));
+  } else if (action === "selectBar") {
+    var bIdx = parseInt(target.getAttribute("data-index"), 10);
+    if (!isNaN(bIdx)) {
+      if (selectedBarIndex === bIdx) {
+        selectedBarIndex = null;
+        selectedBarLabel = null;
+      } else {
+        selectedBarIndex = bIdx;
+        selectedBarLabel = target.getAttribute("data-label") || null;
+      }
+      renderStatsPage();
+    }
+  } else if (action === "clearBarFilter") {
+    selectedBarIndex = null;
+    selectedBarLabel = null;
+    renderStatsPage();
   } else if (action === "toggleHideEmail") {
     hideEmail = !hideEmail;
     var btn = document.getElementById("btn-hide-email");
@@ -525,6 +584,25 @@ document.addEventListener("click", function(e) {
       sortConfig[sec].dir = sortConfig[sec].dir === "desc" ? "asc" : "desc";
       renderStatsPage();
     }
+  } else if (action === "toggleAffinity") {
+    var affEmail = target.getAttribute("data-email");
+    var curAff = target.getAttribute("data-affinity") || "all";
+    var nextAff = curAff === "all" ? "claude" : curAff === "claude" ? "gemini" : "all";
+    send("updateAccountMeta", { email: affEmail, affinity: nextAff });
+  } else if (action === "toggleRole") {
+    var roleEmail = target.getAttribute("data-email");
+    var curRole = target.getAttribute("data-role") || "primary";
+    var nextRole = curRole === "primary" ? "reserve" : "primary";
+    send("updateAccountMeta", { email: roleEmail, role: nextRole });
+  } else if (action === "editAlias") {
+    var aliasEmail = target.getAttribute("data-email");
+    var curAlias = target.getAttribute("data-alias") || "";
+    var newAlias = prompt("Enter alias for " + aliasEmail + " (leave empty to clear):", curAlias);
+    if (newAlias !== null) {
+      send("updateAccountMeta", { email: aliasEmail, alias: newAlias.trim() });
+    }
+  } else if (action === "reauthAccount") {
+    send("reauthAccount", target.getAttribute("data-email"));
   } else if (action === "refreshAccount") {
     send("refreshAccount", target.getAttribute("data-email"));
   } else if (action === "removeAccount") {
@@ -556,6 +634,8 @@ document.addEventListener("change", function(e) {
     send("togglePatch", { id: target.getAttribute("data-patch-id"), enabled: target.checked });
   } else if (action === "toggleEnabled") {
     send("updateConfig", { enabled: target.checked });
+  } else if (action === "changeStrategy") {
+    send("updateConfig", { rotationStrategy: target.value });
   }
 });
 
@@ -598,16 +678,23 @@ function updateTabStyles() {
 
 function setStatsRange(range) {
   statsRange = range;
+  selectedBarIndex = null;
+  selectedBarLabel = null;
   updateTabStyles();
   renderStatsPage();
 }
 
 function fmtTime(s) {
   if (!s) return "";
-  var d = Date.parse(s) - Date.now();
+  var target = new Date(s);
+  var d = target.getTime() - Date.now();
   if (d <= 0 || isNaN(d)) return "ready";
-  var days = Math.floor(d / 864e5), hrs = Math.floor((d % 864e5) / 36e5), mins = Math.floor((d % 36e5) / 6e4), secs = Math.floor((d % 6e4) / 1e3);
-  return days > 0 ? days + "d " + hrs + "h" : hrs > 0 ? hrs + "h " + mins + "m " + secs + "s" : mins + "m " + secs + "s";
+  var days = Math.floor(d / 864e5), hrs = Math.floor((d % 864e5) / 36e5), mins = Math.floor((d % 36e5) / 6e4);
+  var rel = days > 0 ? days + "d " + hrs + "h" : hrs > 0 ? hrs + "h " + mins + "m" : mins + "m";
+  var hrsStr = String(target.getHours()).padStart(2, "0");
+  var minsStr = String(target.getMinutes()).padStart(2, "0");
+  var localClock = hrsStr + ":" + minsStr;
+  return rel + " (" + localClock + ")";
 }
 
 function render() {
@@ -615,6 +702,9 @@ function render() {
     if (state && state.config) {
       if (document.getElementById("cfg-enabled")) {
         document.getElementById("cfg-enabled").checked = state.config.enabled !== false;
+      }
+      if (document.getElementById("cfg-strategy")) {
+        document.getElementById("cfg-strategy").value = state.config.rotationStrategy || "auto_highest";
       }
       if (typeof state.config.hideEmail === "boolean") {
         hideEmail = state.config.hideEmail;
@@ -677,7 +767,7 @@ function renderAccounts() {
 
   var cardsHtml = visibleAccs.map(function(acc, idx) {
     var email = acc.email || "";
-    var displayEmail = hideEmail ? ("Account " + (idx + 1)) : email;
+    var displayEmail = hideEmail ? ("Account " + (idx + 1)) : (acc.alias ? (acc.alias + " (" + email.split("@")[0] + ")") : email);
     var titleAttr = hideEmail ? ("Account " + (idx + 1)) : email;
     var isDis = acc.status === "disabled";
     var isAct = !isDis && email && email.toLowerCase() === ((state && state.activeEmail) || "").toLowerCase();
@@ -690,16 +780,26 @@ function renderAccounts() {
       return html;
     }).join("") + '</div>';
     var tag = isAct ? '<span class="active-tag">ACTIVE</span>' : isDis ? '<span class="dis-tag">OFF</span>' : '';
-    var updatedStr = q.lastUpdated ? fmtDateTime(q.lastUpdated) : "";
-    var metaHtml = updatedStr ? ('<div class="card-meta" style="margin-top:2px;font-size:8.5px;">Refreshed: ' + esc(updatedStr) + '</div>') : '';
+    var affTag = '<span class="chip-tag" data-action="toggleAffinity" data-email="' + esc(email) + '" data-affinity="' + esc(acc.affinity || "all") + '" title="Model Affinity: ' + esc(acc.affinity || "all") + ' (click to change)">' + esc((acc.affinity || "all").toUpperCase()) + '</span>';
+    var roleTag = '<span class="chip-tag" data-action="toggleRole" data-email="' + esc(email) + '" data-role="' + esc(acc.role || "primary") + '" title="Pool Role: ' + esc(acc.role || "primary") + ' (click to change)">' + esc((acc.role || "primary").toUpperCase()) + '</span>';
+    var healthBadge = (acc.health && acc.health !== "healthy")
+      ? ('<span class="err-tag" title="' + esc(acc.healthError || "Token requires re-authentication") + '">' + (acc.health === "expired" ? "EXPIRED" : acc.health === "tos_required" ? "TOS REQ" : "ERROR") + '</span>')
+      : "";
+    var reauthBtn = (acc.health && acc.health !== "healthy")
+      ? ('<button class="btn btn-sec btn-icon" data-action="reauthAccount" data-email="' + esc(email) + '" title="1-Click Re-Auth" style="color:var(--warn);border-color:var(--warn);font-size:8.5px;padding:1px 4px;">Re-Auth</button>')
+      : "";
     return '<div class="card ' + (isAct ? "active" : "") + ' ' + (isDis ? "disabled" : "") + '">' +
       '<div class="card-head">' +
         '<div style="display:flex;align-items:center;gap:3px;overflow:hidden;flex:1;min-width:0;">' +
           '<span class="tier-tag">' + esc(acc.tier || "pro") + '</span>' +
-          '<span class="card-title" title="' + esc(titleAttr) + '">' + esc(displayEmail) + '</span>' +
+          '<span class="card-title" title="' + esc(titleAttr) + '" data-action="editAlias" data-email="' + esc(email) + '" data-alias="' + esc(acc.alias || "") + '" style="cursor:pointer;">' + esc(displayEmail) + '</span>' +
+          affTag +
+          roleTag +
+          healthBadge +
           tag +
         '</div>' +
         '<div style="display:flex;align-items:center;gap:3px;flex-shrink:0;">' +
+          reauthBtn +
           '<label class="switch" title="' + (isDis ? "Enable in pool" : "Disable in pool") + '">' +
             '<input type="checkbox" ' + (isDis ? "" : "checked") + ' data-action="toggleAccount" data-email="' + esc(email) + '" />' +
             '<span class="slider"></span>' +
@@ -709,7 +809,6 @@ function renderAccounts() {
         '</div>' +
       '</div>' +
       qHtml +
-      metaHtml +
     '</div>';
   }).join("");
 
@@ -727,11 +826,19 @@ function renderStatsWidget() {
   var container = document.getElementById("stats-widget");
   if (!container) return;
   var s = (state && state.stats) || {};
-  var t = s.today || { totalTokens: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0 };
+  var t = s.today || { totalTokens: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, thinkingTokens: 0, contentTokens: 0 };
   var tot = t.totalTokens || 1;
   var pCac = Math.round(((t.cacheHitTokens || 0) / tot) * 100);
   var pInp = Math.round(((t.cacheMissTokens || Math.max(0, (t.inputTokens || 0) - (t.cacheHitTokens || 0))) / tot) * 100);
-  var pOut = Math.max(0, 100 - pCac - pInp);
+  var pThk = Math.round(((t.thinkingTokens || 0) / tot) * 100);
+  var pOut = Math.max(0, 100 - pCac - pInp - pThk);
+
+  var breakdownHtml = '<div class="cb-item"><span class="cb-lbl">In</span><span class="cb-val" style="color:var(--input-col);">' + fmtNum(t.inputTokens || 0) + '</span></div>' +
+    '<div class="cb-item"><span class="cb-lbl">Out</span><span class="cb-val" style="color:var(--output-col);">' + fmtNum(t.outputTokens || 0) + '</span></div>' +
+    '<div class="cb-item"><span class="cb-lbl">Cache <b style="opacity:0.8;font-weight:600;">(' + pCac + '%)</b></span><span class="cb-val" style="color:var(--cached);">' + fmtNum(t.cacheHitTokens || 0) + '</span></div>';
+  if ((t.thinkingTokens || 0) > 0) {
+    breakdownHtml += '<div class="cb-item"><span class="cb-lbl">Thinking</span><span class="cb-val" style="color:var(--thinking-col);">' + fmtNum(t.thinkingTokens || 0) + '</span></div>';
+  }
 
   container.innerHTML = '<div class="card">' +
     '<div class="card-head">' +
@@ -744,13 +851,15 @@ function renderStatsWidget() {
     '<div class="segmented-bar">' +
       '<div class="seg-cac" style="width:' + pCac + '%;" title="Cache Hit: ' + fmtNum(t.cacheHitTokens || 0) + '"></div>' +
       '<div class="seg-inp" style="width:' + pInp + '%;" title="New Input: ' + fmtNum(t.cacheMissTokens || Math.max(0, (t.inputTokens || 0) - (t.cacheHitTokens || 0))) + '"></div>' +
-      '<div class="seg-out" style="width:' + pOut + '%;" title="Output: ' + fmtNum(t.outputTokens || 0) + '"></div>' +
+      '<div class="seg-thk" style="width:' + pThk + '%;" title="Thinking: ' + fmtNum(t.thinkingTokens || 0) + '"></div>' +
+      '<div class="seg-out" style="width:' + pOut + '%;" title="Output: ' + fmtNum(t.contentTokens || ((t.outputTokens || 0) - (t.thinkingTokens || 0))) + '"></div>' +
     '</div>' +
-    '<div class="card-breakdown">' +
-      '<div class="cb-item"><span class="cb-lbl">In</span><span class="cb-val" style="color:var(--input-col);">' + fmtNum(t.inputTokens || 0) + '</span></div>' +
-      '<div class="cb-item"><span class="cb-lbl">Out</span><span class="cb-val" style="color:var(--output-col);">' + fmtNum(t.outputTokens || 0) + '</span></div>' +
-      '<div class="cb-item"><span class="cb-lbl">Cache <b style="opacity:0.8;font-weight:600;">(' + pCac + '%)</b></span><span class="cb-val" style="color:var(--cached);">' + fmtNum(t.cacheHitTokens || 0) + '</span></div>' +
+    '<div class="card-breakdown" style="' + ((t.thinkingTokens || 0) > 0 ? 'grid-template-columns:repeat(4,1fr);' : '') + '">' +
+      breakdownHtml +
     '</div>' +
+    (s.burnRate && s.burnRate.tokensPerMin > 0
+      ? ('<div class="card-meta" style="margin-top:3px;font-size:8.5px;color:var(--dim);border-top:1px solid var(--border);padding-top:3px;">Burn Rate: <strong style="color:var(--text);font-family:var(--mono);">~' + fmtTokens(s.burnRate.tokensPerMin) + '/min</strong> (' + s.burnRate.recentTurns + ' turns in 15m)</div>')
+      : '') +
   '</div>';
 }
 
@@ -819,10 +928,13 @@ function renderStatsPage() {
 
   var svgBars = data.map(function(d, i) {
     var total = (d && d.totalTokens) || 0;
+    var isSelected = selectedBarIndex === i;
+    var isDimmed = selectedBarIndex !== null && !isSelected;
     var h = total > 0 ? Math.min(maxBarH, Math.max(4, Math.round((total / maxVal) * maxBarH))) : 0;
     var hCac = Math.round((((d && d.cacheHitTokens) || 0) / (total || 1)) * h);
     var hInp = Math.round((((d && d.cacheMissTokens) || Math.max(0, ((d && d.inputTokens) || 0) - ((d && d.cacheHitTokens) || 0))) / (total || 1)) * h);
-    var hOut = Math.max(0, h - hCac - hInp);
+    var hThk = Math.round((((d && d.thinkingTokens) || 0) / (total || 1)) * h);
+    var hOut = Math.max(0, h - hCac - hInp - hThk);
 
     var x = i * stepX + 16;
     var label = statsRange === "today"
@@ -835,58 +947,103 @@ function renderStatsPage() {
 
     var yCac = yBase - hCac;
     var yInp = yCac - hInp;
-    var yOut = yInp - hOut;
+    var yThk = yInp - hThk;
+    var yOut = yThk - hOut;
     var textY = yBase - h - 5;
 
-    var cacRect = hCac > 0 ? '<rect x="' + x + '" y="' + yCac + '" width="' + barWidth + '" height="' + hCac + '" fill="#8b5cf6" rx="1"><title>' + label + ' Cache Hit: ' + fmtNum(d.cacheHitTokens) + '</title></rect>' : '';
+    var cacRect = hCac > 0 ? '<rect x="' + x + '" y="' + yCac + '" width="' + barWidth + '" height="' + hCac + '" fill="#a855f7" rx="1"><title>' + label + ' Cache Hit: ' + fmtNum(d.cacheHitTokens) + '</title></rect>' : '';
     var inpRect = hInp > 0 ? '<rect x="' + x + '" y="' + yInp + '" width="' + barWidth + '" height="' + hInp + '" fill="#3b82f6"><title>' + label + ' New Input: ' + fmtNum(d.cacheMissTokens || (((d && d.inputTokens) || 0) - ((d && d.cacheHitTokens) || 0))) + '</title></rect>' : '';
-    var outRect = hOut > 0 ? '<rect x="' + x + '" y="' + yOut + '" width="' + barWidth + '" height="' + hOut + '" fill="#10b981" rx="1"><title>' + label + ' Output: ' + fmtNum(d.outputTokens) + '</title></rect>' : '';
-    var topText = total > 0 ? '<text x="' + (x + barWidth / 2) + '" y="' + textY + '" text-anchor="middle" font-size="8" font-weight="600" fill="#f8fafc" font-family="var(--mono)">' + fmtNum(total) + '</text>' : '';
-    var dateText = '<text x="' + (x + barWidth / 2) + '" y="132" text-anchor="middle" font-size="8" fill="#94a3b8" font-family="var(--mono)">' + label + '</text>';
+    var thkRect = hThk > 0 ? '<rect x="' + x + '" y="' + yThk + '" width="' + barWidth + '" height="' + hThk + '" fill="#f59e0b"><title>' + label + ' Thinking: ' + fmtNum(d.thinkingTokens) + '</title></rect>' : '';
+    var outRect = hOut > 0 ? '<rect x="' + x + '" y="' + yOut + '" width="' + barWidth + '" height="' + hOut + '" fill="#10b981" rx="1"><title>' + label + ' Content: ' + fmtNum((d.contentTokens || d.outputTokens) - (d.thinkingTokens || 0)) + '</title></rect>' : '';
+    var selBorder = isSelected ? '<rect x="' + (x - 2) + '" y="' + (yBase - h - 2) + '" width="' + (barWidth + 4) + '" height="' + (h + 4) + '" fill="none" stroke="var(--accent)" stroke-width="1.5" rx="3" />' : '';
+    var topText = total > 0 ? '<text x="' + (x + barWidth / 2) + '" y="' + textY + '" text-anchor="middle" font-size="8" font-weight="' + (isSelected ? '700' : '600') + '" fill="' + (isSelected ? '#60a5fa' : '#f8fafc') + '" font-family="var(--mono)">' + fmtNum(total) + '</text>' : '';
+    var dateText = '<text x="' + (x + barWidth / 2) + '" y="132" text-anchor="middle" font-size="8" fill="' + (isSelected ? '#fff' : '#94a3b8') + '" font-weight="' + (isSelected ? '700' : '400') + '" font-family="var(--mono)">' + label + '</text>';
 
-    return '<g>' + cacRect + inpRect + outRect + topText + dateText + '</g>';
+    return '<g class="bar-group ' + (isDimmed ? 'dimmed' : '') + '" data-action="selectBar" data-index="' + i + '" data-label="' + esc(label) + '">' + selBorder + cacRect + inpRect + thkRect + outRect + topText + dateText + '</g>';
   }).join("");
 
   var totalSvgWidth = Math.max(280, data.length * stepX + 32);
   chartBox.innerHTML = '<svg class="chart-svg" style="width:' + totalSvgWidth + 'px;min-width:100%;" viewBox="0 0 ' + totalSvgWidth + ' 142">' + svgBars + '</svg>';
-  if (statsRange === "today" || statsRange === "daily") {
+  if ((statsRange === "today" || statsRange === "daily") && selectedBarIndex === null) {
     setTimeout(function() {
       if (chartBox) chartBox.scrollLeft = chartBox.scrollWidth;
     }, 20);
   }
 
-  // Compute filtered cumulative metrics
+  // Selected bar slice or full active horizon
+  var activeSlice = (selectedBarIndex !== null && data[selectedBarIndex]) ? data[selectedBarIndex] : null;
+
   var rangeTotalInp = 0;
   var rangeTotalOut = 0;
   var rangeTotalHit = 0;
+  var rangeTotalThk = 0;
   var rangeTotalTokens = 0;
 
-  for (var k = 0; k < data.length; k++) {
-    var db = data[k];
-    if (!db) continue;
-    rangeTotalInp += (db.inputTokens || 0);
-    rangeTotalOut += (db.outputTokens || 0);
-    rangeTotalHit += (db.cacheHitTokens || 0);
-    rangeTotalTokens += (db.totalTokens || 0);
+  if (activeSlice) {
+    rangeTotalInp = activeSlice.inputTokens || 0;
+    rangeTotalOut = activeSlice.outputTokens || 0;
+    rangeTotalHit = activeSlice.cacheHitTokens || 0;
+    rangeTotalThk = activeSlice.thinkingTokens || 0;
+    rangeTotalTokens = activeSlice.totalTokens || 0;
+  } else {
+    for (var k = 0; k < data.length; k++) {
+      var db = data[k];
+      if (!db) continue;
+      rangeTotalInp += (db.inputTokens || 0);
+      rangeTotalOut += (db.outputTokens || 0);
+      rangeTotalHit += (db.cacheHitTokens || 0);
+      rangeTotalThk += (db.thinkingTokens || 0);
+      rangeTotalTokens += (db.totalTokens || 0);
+    }
   }
 
   var rangeHitRate = rangeTotalInp > 0 ? Math.round((rangeTotalHit / rangeTotalInp) * 1000) / 10 : 0;
 
   var cumTitleEl = document.getElementById("cumulative-title");
-  if (cumTitleEl) cumTitleEl.textContent = "Metrics";
+  if (cumTitleEl) {
+    cumTitleEl.textContent = activeSlice ? ("Metrics for " + (selectedBarLabel || "Selected Slice")) : "Metrics";
+  }
 
   var allTimeGrid = document.getElementById("alltime-grid");
   if (allTimeGrid) {
+    var thkMetricHtml = rangeTotalThk > 0
+      ? '<div class="stat-box"><span class="stat-lbl">Thinking Depth</span><span class="stat-val" style="color:var(--thinking-col);">' + fmtNum(rangeTotalThk) + '</span></div>'
+      : '<div class="stat-box"><span class="stat-lbl">Cache Hit Rate</span><span class="stat-val" style="color:var(--cached);">' + fmtNum(rangeTotalHit) + ' <span style="font-size:10px;font-weight:600;color:var(--dim);">(' + rangeHitRate + '%)</span></span></div>';
+
     allTimeGrid.innerHTML =
       '<div class="stat-box"><span class="stat-lbl">Processed</span><span class="stat-val">' + fmtNum(rangeTotalTokens) + '</span></div>' +
       '<div class="stat-box"><span class="stat-lbl">Prompt Input</span><span class="stat-val" style="color:var(--input-col);">' + fmtNum(rangeTotalInp) + '</span></div>' +
       '<div class="stat-box"><span class="stat-lbl">Completion Output</span><span class="stat-val" style="color:var(--output-col);">' + fmtNum(rangeTotalOut) + '</span></div>' +
-      '<div class="stat-box"><span class="stat-lbl">Cache Hit Rate</span><span class="stat-val" style="color:var(--cached);">' + fmtNum(rangeTotalHit) + ' <span style="font-size:10px;font-weight:600;color:var(--dim);">(' + rangeHitRate + '%)</span></span></div>';
+      thkMetricHtml;
   }
 
-  // Render Filtered Requests
+  // Filter Requests
   var allReqs = (s && Array.isArray(s.requests)) ? s.requests.filter(Boolean) : [];
-  var reqs = allReqs.filter(function(r) { return r && (r.timestamp || 0) >= cutoffMs; });
+  var reqs = [];
+
+  if (activeSlice) {
+    reqs = allReqs.filter(function(r) {
+      if (!r || !r.timestamp) return false;
+      if (statsRange === "today") {
+        return typeof activeSlice.hour === "number" && new Date(r.timestamp).getHours() === activeSlice.hour;
+      }
+      if (statsRange === "daily") {
+        return activeSlice.date && new Date(r.timestamp).toISOString().slice(0, 10) === activeSlice.date;
+      }
+      if (statsRange === "weekly") {
+        var rTs = r.timestamp;
+        var startTs = Date.parse(activeSlice.startDate);
+        var endTs = Date.parse(activeSlice.endDate) + 864e5;
+        return rTs >= startTs && rTs <= endTs;
+      }
+      if (statsRange === "monthly") {
+        return activeSlice.startDate && new Date(r.timestamp).toISOString().slice(0, 7) === activeSlice.startDate.slice(0, 7);
+      }
+      return true;
+    });
+  } else {
+    reqs = allReqs.filter(function(r) { return r && (r.timestamp || 0) >= cutoffMs; });
+  }
 
   var rField = (sortConfig.requests && sortConfig.requests.field) || "recent";
   var rDir = (sortConfig.requests && sortConfig.requests.dir === "asc") ? 1 : -1;
@@ -913,13 +1070,22 @@ function renderStatsPage() {
   var reqBreakdownEl = document.getElementById("request-breakdown");
   if (reqCountEl) reqCountEl.textContent = reqs.length + " reqs";
   if (reqBreakdownEl) {
-    reqBreakdownEl.innerHTML = reqs.length ? reqs.map(function(r) {
+    var filterBanner = activeSlice
+      ? '<div class="row" style="background:var(--card);border:1px solid var(--accent);border-radius:5px;padding:3px 7px;width:100%;margin-bottom:3px;"><span style="font-size:9px;color:var(--text);font-weight:600;">Filtered to ' + esc(selectedBarLabel || "Slice") + '</span><button class="btn btn-sec btn-icon" data-action="clearBarFilter" style="font-size:8.5px;padding:1px 4px;">Clear</button></div>'
+      : '';
+
+    reqBreakdownEl.innerHTML = reqs.length ? (filterBanner + reqs.map(function(r) {
       if (!r) return "";
       var dateStr = r.timestamp ? new Date(r.timestamp).toLocaleDateString([], { month: "numeric", day: "numeric" }) : "";
       var timeStr = r.timestamp ? new Date(r.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
       var tCount = r.turnCount || 1;
       var hitRate = (r.inputTokens && r.inputTokens > 0) ? Math.round(((r.cacheHitTokens || 0) / r.inputTokens) * 100) : 0;
       var modelTag = r.model || "Gemini";
+      var thkVal = r.thinkingTokens || 0;
+      var outVal = (r.contentTokens || r.outputTokens || 0) - thkVal;
+      var cbColumns = thkVal > 0 ? 'grid-template-columns:repeat(4,1fr);' : 'grid-template-columns:repeat(3,1fr);';
+      var thkItem = thkVal > 0 ? '<div class="cb-item"><span class="cb-lbl">Thk</span><span class="cb-val" style="color:var(--thinking-col);">' + fmtNum(thkVal) + '</span></div>' : '';
+
       return '<div class="square-card">' +
         '<div class="card-head" style="align-items:flex-start;">' +
           '<span class="tier-tag" title="' + esc(modelTag) + '">' + esc(modelTag) + '</span>' +
@@ -930,29 +1096,32 @@ function renderStatsPage() {
           '<span style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--text);">' + fmtNum(r.totalTokens || 0) + ' <span style="font-size:10px;font-weight:700;color:var(--cached);">(' + hitRate + '%)</span></span>' +
         '</div>' +
         '<div class="card-meta">' + tCount + (tCount === 1 ? " turn" : " turns") + ' &bull; ' + dateStr + (timeStr ? ' ' + timeStr : '') + '</div>' +
-        '<div class="card-breakdown">' +
+        '<div class="card-breakdown" style="' + cbColumns + '">' +
           '<div class="cb-item"><span class="cb-lbl">In</span><span class="cb-val" style="color:var(--input-col);">' + fmtNum(r.inputTokens || 0) + '</span></div>' +
-          '<div class="cb-item"><span class="cb-lbl">Out</span><span class="cb-val" style="color:var(--output-col);">' + fmtNum(r.outputTokens || 0) + '</span></div>' +
+          '<div class="cb-item"><span class="cb-lbl">Out</span><span class="cb-val" style="color:var(--output-col);">' + fmtNum(outVal > 0 ? outVal : r.outputTokens || 0) + '</span></div>' +
           '<div class="cb-item"><span class="cb-lbl">Cache</span><span class="cb-val" style="color:var(--cached);">' + fmtNum(r.cacheHitTokens || 0) + '</span></div>' +
+          thkItem +
         '</div>' +
       '</div>';
-    }).join("") : '<div class="empty" style="width:100%;">No requests in this period.</div>';
+    }).join("")) : (filterBanner + '<div class="empty" style="width:100%;">No requests in this period.</div>');
   }
 
-  // Render Filtered Models strictly from active time horizon buckets
+  // Render Filtered Models
   var models = {};
-  for (var i = 0; i < data.length; i++) {
-    var d = data[i];
+  var sourceData = activeSlice ? [activeSlice] : data;
+  for (var i = 0; i < sourceData.length; i++) {
+    var d = sourceData[i];
     if (d && d.models && typeof d.models === "object") {
       for (var m in d.models) {
         if (!m) continue;
         var mb = d.models[m];
         if (!mb) continue;
-        if (!models[m]) models[m] = { total: 0, inp: 0, out: 0, hit: 0 };
+        if (!models[m]) models[m] = { total: 0, inp: 0, out: 0, hit: 0, thk: 0 };
         models[m].total += (mb.totalTokens || 0);
         models[m].inp += (mb.inputTokens || 0);
         models[m].out += (mb.outputTokens || 0);
         models[m].hit += (mb.cacheHitTokens || 0);
+        models[m].thk += (mb.thinkingTokens || 0);
       }
     }
   }
@@ -986,6 +1155,11 @@ function renderStatsPage() {
       var b = models[m];
       if (!b) return "";
       var mHitRate = b.inp > 0 ? Math.round(((b.hit || 0) / b.inp) * 100) : 0;
+      var mThkVal = b.thk || 0;
+      var mOutVal = b.out - mThkVal;
+      var mCbCols = mThkVal > 0 ? 'grid-template-columns:repeat(4,1fr);' : 'grid-template-columns:repeat(3,1fr);';
+      var mThkItem = mThkVal > 0 ? '<div class="cb-item"><span class="cb-lbl">Thk</span><span class="cb-val" style="color:var(--thinking-col);">' + fmtNum(mThkVal) + '</span></div>' : '';
+
       return '<div class="square-card">' +
         '<div class="card-head" style="align-items:flex-start;">' +
           '<span class="tier-tag">MODEL</span>' +
@@ -995,10 +1169,11 @@ function renderStatsPage() {
           '<span style="font-size:8px;color:var(--dim);text-transform:uppercase;font-weight:600;">Volume</span>' +
           '<span style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--text);">' + fmtNum(b.total) + ' <span style="font-size:10px;font-weight:700;color:var(--cached);">(' + mHitRate + '%)</span></span>' +
         '</div>' +
-        '<div class="card-breakdown" style="margin-top:2px;">' +
+        '<div class="card-breakdown" style="margin-top:2px;' + mCbCols + '">' +
           '<div class="cb-item"><span class="cb-lbl">In</span><span class="cb-val" style="color:var(--input-col);">' + fmtNum(b.inp) + '</span></div>' +
-          '<div class="cb-item"><span class="cb-lbl">Out</span><span class="cb-val" style="color:var(--output-col);">' + fmtNum(b.out) + '</span></div>' +
+          '<div class="cb-item"><span class="cb-lbl">Out</span><span class="cb-val" style="color:var(--output-col);">' + fmtNum(mOutVal > 0 ? mOutVal : b.out) + '</span></div>' +
           '<div class="cb-item"><span class="cb-lbl">Cache</span><span class="cb-val" style="color:var(--cached);">' + fmtNum(b.hit || 0) + '</span></div>' +
+          mThkItem +
         '</div>' +
       '</div>';
     }).join("") : '<div class="empty" style="width:100%;">No model activity.</div>';

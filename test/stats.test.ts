@@ -38,7 +38,7 @@ describe("StatsManager Token Usage Engine", () => {
     const manager = new StatsManager(fakeContext, () => {});
     const today = new Date().toISOString().slice(0, 10);
 
-    manager.recordTokens(today, "Gemini 3.7 Flash High", "conv-1", "Fix database connection", "", 45000, 2200, 40000, 5000, "Fix database connection", Date.now(), 4);
+    manager.recordTokens(today, "Gemini 3.7 Flash High", "conv-1", "Fix database connection", "", 45000, 2200, 40000, 5000, "Fix database connection", Date.now(), 4, 1800, 400);
     const todayStats = manager.getTodayStats();
 
     expect(todayStats.totalTokens).toBe(47200);
@@ -46,6 +46,8 @@ describe("StatsManager Token Usage Engine", () => {
     expect(todayStats.outputTokens).toBe(2200);
     expect(todayStats.cacheHitTokens).toBe(40000);
     expect(todayStats.cacheMissTokens).toBe(5000);
+    expect(todayStats.thinkingTokens).toBe(1800);
+    expect(todayStats.contentTokens).toBe(400);
     expect(todayStats.models["Gemini 3.7 Flash High"]?.totalTokens).toBe(47200);
 
     const convList = manager.getConversationsList();
@@ -53,11 +55,15 @@ describe("StatsManager Token Usage Engine", () => {
     expect(convList[0]?.id).toBe("conv-1");
     expect(convList[0]?.title).toBe("Fix database connection");
     expect(convList[0]?.cacheHitTokens).toBe(40000);
+    expect(convList[0]?.thinkingTokens).toBe(1800);
+    expect(convList[0]?.contentTokens).toBe(400);
     expect(convList[0]?.turnCount).toBe(4);
 
     const reqList = manager.getRequestsList();
     expect(reqList.length).toBe(1);
     expect(reqList[0]?.promptPreview).toBe("Fix database connection");
+    expect(reqList[0]?.thinkingTokens).toBe(1800);
+    expect(reqList[0]?.contentTokens).toBe(400);
     expect(reqList[0]?.turnCount).toBe(4);
 
     manager.dispose();
@@ -183,12 +189,12 @@ describe("StatsManager Token Usage Engine", () => {
     const parsed = parseTranscriptLines(lines);
     expect(parsed.completedBlocks.length).toBe(2);
 
-    expect(parsed.completedBlocks[0]?.startTurnIdx).toBe(1);
-    expect(parsed.completedBlocks[0]?.endTurnIdx).toBe(2);
+    expect(parsed.completedBlocks[0]?.startTurnIdx).toBe(0);
+    expect(parsed.completedBlocks[0]?.endTurnIdx).toBe(1);
     expect(parsed.completedBlocks[0]?.turnCount).toBe(2);
 
-    expect(parsed.completedBlocks[1]?.startTurnIdx).toBe(3);
-    expect(parsed.completedBlocks[1]?.endTurnIdx).toBe(3);
+    expect(parsed.completedBlocks[1]?.startTurnIdx).toBe(2);
+    expect(parsed.completedBlocks[1]?.endTurnIdx).toBe(2);
     expect(parsed.completedBlocks[1]?.turnCount).toBe(1);
   });
 
