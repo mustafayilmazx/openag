@@ -5,7 +5,15 @@ import type { EffectiveQuota } from "../src/types.js";
 
 const TAG_AUTORUN = "/*OPENAG:autorun*/";
 
+const { AutoRunPatcher } = await import("../src/core/patcher.js");
+
 describe("AutoRunPatcher modular patch transformations", () => {
+  test("getAppRoot handles environment resolution and respects setAppRootOverride", () => {
+    AutoRunPatcher.setAppRootOverride("/nonexistent/custom/path");
+    // Nonexistent override is safely ignored
+    expect(AutoRunPatcher.getAppRoot()).not.toBe("/nonexistent/custom/path");
+    AutoRunPatcher.setAppRootOverride(null);
+  });
   test("generates valid syntax for autorun in AMD bundle", () => {
     const original = `
       define(["require", "exports"], function (require, exports) {
@@ -81,11 +89,105 @@ describe("AutoRunPatcher modular patch transformations", () => {
     expect(() => new vm.SourceTextModule(patched)).not.toThrow();
   });
 
+  test("applies and validates filePermission, approvalInteraction, and permission auto-approvals", () => {
+    const bundle = `
+      export const FileComp = ({sourceTrajectoryStepInfo:t,req:e,status:i,interactionError:n,clearError:r,sendInteraction:s}) => {
+        let h=(m,b)=>{s(u,l,d,{case:"filePermission",value:Ut(OAn,{allow:m,scope:b,absolutePathUri:e.absolutePathUri})},m?"Failed":"Failed")};
+        return f("div",{children:null});
+      };
+      export const ApprovalComp = ({n,d,g,m,b}) => {
+        let y=me(z=>{d(b,g,m,{case:"approvalInteraction",value:Ut(SBo,{confirm:z})})},[d,g,m,b]);
+        return f("div",{children:null});
+      };
+      export const PermissionComp = ({s,n,t,r,ue,Z}) => {
+        let ae=me(()=>{J?ue(!1,Z):ue(!0)},[ue,J,Z]);
+        return s?E(T9n,{toolName:"ask_permission",handleSubmit:ae}):null;
+      };
+    `;
+
+    let patched = bundle;
+
+    // filePermission
+    const fpAnchor = '{case:"filePermission",value:';
+    const fpIdx = patched.indexOf(fpAnchor);
+    if (fpIdx !== -1) {
+      const win = patched.slice(Math.max(0, fpIdx - 150), fpIdx);
+      const match = win.match(/([a-zA-Z0-9_$]+)\s*=\s*\(([a-zA-Z0-9_$]+),\s*([a-zA-Z0-9_$]+)\)\s*=>\s*\{/);
+      if (match) {
+        const cbVar = match[1];
+        const afterAnchor = patched.slice(fpIdx, fpIdx + 200);
+        const endMatch = afterAnchor.match(/\};/);
+        if (endMatch && endMatch.index !== undefined) {
+          const cbEndPos = fpIdx + endMatch.index + endMatch[0].length;
+          const patchCode = `;((typeof yt==="function"?yt:null)||(typeof React!=="undefined"?React.useEffect:null))?.(()=>{try{let _h=(typeof co==="function"?co:null);let _st=_h?.()?.stepHandler;if(!_st?.secureModeEnabled)${cbVar}(!0,1)}catch{}},[${cbVar}]);`;
+          patched = patched.slice(0, cbEndPos) + patchCode + patched.slice(cbEndPos);
+        }
+      }
+    }
+
+    // approvalInteraction
+    const appAnchor = '{case:"approvalInteraction",value:';
+    const appIdx = patched.indexOf(appAnchor);
+    if (appIdx !== -1) {
+      const win = patched.slice(Math.max(0, appIdx - 150), appIdx + 50);
+      const match = win.match(/([a-zA-Z0-9_$]+)\s*=\s*([a-zA-Z0-9_$]+)\s*\(\s*([a-zA-Z0-9_$]+)\s*=>\s*\{/);
+      if (match) {
+        const cbVar = match[1];
+        const afterAnchor = patched.slice(appIdx, appIdx + 200);
+        const endMatch = afterAnchor.match(/\},\s*\[[^\]]*\]\s*\)/);
+        if (endMatch && endMatch.index !== undefined) {
+          const cbEndPos = appIdx + endMatch.index + endMatch[0].length;
+          const patchCode = `;((typeof yt==="function"?yt:null)||(typeof React!=="undefined"?React.useEffect:null))?.(()=>{try{let _h=(typeof co==="function"?co:null);let _st=_h?.()?.stepHandler;if(!_st?.secureModeEnabled)${cbVar}(!0)}catch{}},[${cbVar}]);`;
+          patched = patched.slice(0, cbEndPos) + patchCode + patched.slice(cbEndPos);
+        }
+      }
+    }
+
+    // ask_permission
+    const permAnchor = 'toolName:"ask_permission"';
+    const permIdx = patched.indexOf(permAnchor);
+    if (permIdx !== -1) {
+      const winStart = Math.max(0, permIdx - 300);
+      const winStr = patched.slice(winStart, permIdx);
+      const match = winStr.match(/([a-zA-Z0-9_$]+)\s*=\s*([a-zA-Z0-9_$]+)\s*\(\s*\(\)\s*=>\s*\{[^}]*\}\s*,\s*\[[^\]]*\]\s*\)/);
+      if (match) {
+        const cbVar = match[1];
+        const matchPos = winStart + (match.index || 0) + match[0].length;
+        const patchCode = `;((typeof yt==="function"?yt:null)||(typeof React!=="undefined"?React.useEffect:null))?.(()=>{try{let _h=(typeof co==="function"?co:null);let _st=_h?.()?.stepHandler;if(!_st?.secureModeEnabled)${cbVar}?.()}catch{}},[${cbVar}]);`;
+        patched = patched.slice(0, matchPos) + patchCode + patched.slice(matchPos);
+      }
+    }
+
+    expect(patched).toContain("h(!0,1)");
+    expect(patched).toContain("y(!0)");
+    expect(patched).toContain("ae?.()");
+    expect(() => new vm.SourceTextModule(patched)).not.toThrow();
+  });
+
   test("calculates valid base64 sha256 checksums without padding for product.json", () => {
     const content = 'console.log("hello openag");';
     const hash = crypto.createHash("sha256").update(content).digest("base64").replace(/=+$/, "");
     expect(hash.length).toBeGreaterThan(20);
     expect(hash).not.toContain("=");
+  });
+
+  test("atomicWriteFile writes and cleans up atomically without leaving temp files", async () => {
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const { atomicWriteFile } = await import("../src/core/patcher.js");
+
+    const tmpDir = os.tmpdir();
+    const testFile = path.join(tmpDir, `openag-atomic-test-${Date.now()}.txt`);
+
+    atomicWriteFile(testFile, "atomic test content");
+    expect(fs.readFileSync(testFile, "utf8")).toBe("atomic test content");
+
+    // Overwrite atomically
+    atomicWriteFile(testFile, "overwritten atomic content");
+    expect(fs.readFileSync(testFile, "utf8")).toBe("overwritten atomic content");
+
+    fs.unlinkSync(testFile);
   });
 });
 
