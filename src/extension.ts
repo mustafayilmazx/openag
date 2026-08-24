@@ -1,4 +1,8 @@
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import * as vscode from "vscode";
+import { HookServer } from "./core/hook-server.js";
 import { LogManager } from "./core/log-manager.js";
 import { OAuthFlow } from "./core/oauth-flow.js";
 import { AutoRunPatcher } from "./core/patcher.js";
@@ -18,6 +22,7 @@ let webviewProvider: WebviewProvider | null = null;
 let logManager: LogManager | null = null;
 let usageTracker: UsageTracker | null = null;
 let statsManager: StatsManager | null = null;
+let hookServer: HookServer | null = null;
 
 function getLogCategory(msg: string): "ROTATION" | "QUOTA" | "USS" | "AUTH" | "SYSTEM" {
   if (msg.includes("AutoRotate") || msg.includes("ROTATION")) return "ROTATION";
@@ -67,10 +72,14 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
 
   webviewProvider = new WebviewProvider(context, tokenManager, quotaMonitor, log, logManager, statsManager, usageTracker);
 
+  hookServer = new HookServer(tokenManager, quotaMonitor, log);
+  void hookServer.start();
+
   context.subscriptions.push(
     logManager,
     usageTracker,
     statsManager,
+    { dispose: () => hookServer?.dispose() },
     vscode.window.registerWebviewViewProvider(WebviewProvider.viewType, webviewProvider, {
       webviewOptions: { retainContextWhenHidden: true },
     }),
@@ -368,6 +377,54 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
         void vscode.window.showErrorMessage(`OpenAG: Quick Status error - ${e instanceof Error ? e.message : String(e)}`);
       }
     }),
+    vscode.commands.registerCommand("openag.installAntigravityHook", async () => {
+      try {
+        const configDir = path.join(os.homedir(), ".gemini", "config");
+        const hooksConfigFile = path.join(configDir, "hooks.json");
+        if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true });
+
+        let hooks: Record<string, unknown> = {};
+        if (fs.existsSync(hooksConfigFile)) {
+          try {
+            // SAFETY: Parse existing JSON hooks configuration
+            hooks = JSON.parse(fs.readFileSync(hooksConfigFile, "utf8")) as Record<string, unknown>;
+          } catch { /* ignore parse error */ }
+        }
+
+        const hookScriptPath = path.join(context.extensionPath, "dist", "hook.js");
+        const cmd = `node "${hookScriptPath}"`;
+
+        hooks["openag-auto-rotate"] = {
+          enabled: true,
+          PreInvocation: [
+            {
+              type: "command",
+              command: cmd,
+              timeout: 5,
+            },
+          ],
+        };
+
+        fs.writeFileSync(hooksConfigFile, JSON.stringify(hooks, null, 2), "utf8");
+        void vscode.window.showInformationMessage("OpenAG: PreInvocation hook registered in ~/.gemini/config/hooks.json");
+      } catch (err: unknown) {
+        void vscode.window.showErrorMessage(`OpenAG: Failed to register hook: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }),
+    vscode.commands.registerCommand("openag.removeAntigravityHook", async () => {
+      try {
+        const hooksConfigFile = path.join(os.homedir(), ".gemini", "config", "hooks.json");
+        if (fs.existsSync(hooksConfigFile)) {
+          // SAFETY: Parse existing JSON hooks configuration
+          const hooks = JSON.parse(fs.readFileSync(hooksConfigFile, "utf8")) as Record<string, unknown>;
+          delete hooks["openag-auto-rotate"];
+          fs.writeFileSync(hooksConfigFile, JSON.stringify(hooks, null, 2), "utf8");
+          void vscode.window.showInformationMessage("OpenAG: PreInvocation hook removed from ~/.gemini/config/hooks.json");
+        }
+      } catch (err: unknown) {
+        void vscode.window.showErrorMessage(`OpenAG: Failed to remove hook: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }),
   );
 
   log("OpenAG activated successfully.");
@@ -375,6 +432,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionExports {
 }
 
 export function deactivate(): void {
+  hookServer?.dispose();
   tokenManager?.dispose();
   quotaMonitor?.dispose();
   statusBar?.dispose();

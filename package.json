@@ -99,6 +99,14 @@
       {
         "command": "openag.quickStatus",
         "title": "OpenAG: Quick Status & Account Switcher"
+      },
+      {
+        "command": "openag.installAntigravityHook",
+        "title": "OpenAG: Register Antigravity PreInvocation Hook"
+      },
+      {
+        "command": "openag.removeAntigravityHook",
+        "title": "OpenAG: Remove Antigravity PreInvocation Hook"
       }
     ]
   },

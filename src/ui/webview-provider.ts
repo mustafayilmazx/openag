@@ -65,6 +65,60 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
     }, 150);
   }
 
+  private getCurrentStateData(): Record<string, unknown> {
+    const accounts = this.tokenManager.getAccounts();
+    const activeEmail = this.tokenManager.getActiveEmail();
+    const quotas = this.quotaMonitor.getAllQuotas();
+    const config = this.tokenManager.getConfig();
+    const logs = this.logManager.getLogs();
+    const patcher = AutoRunPatcher.getStatus();
+    const todayStats = this.statsManager?.getTodayStats() || {
+      date: new Date().toISOString().slice(0, 10),
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheHitTokens: 0,
+      cacheMissTokens: 0,
+      totalTokens: 0,
+      models: {},
+      conversations: {},
+    };
+    const hourlyStats = this.statsManager?.getTodayHourlyStats() || [];
+    const dailyStats = this.statsManager?.getDailyStats(7) || [];
+    const weeklyStats = this.statsManager?.getWeeklyStats(4) || [];
+    const monthlyStats = this.statsManager?.getMonthlyStats(12) || [];
+    const conversationsList = this.statsManager?.getConversationsList(100) || [];
+    const requestsList = this.statsManager?.getRequestsList(100) || [];
+    const allTimeSummary = this.statsManager?.getAllTimeSummary() || {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheHitTokens: 0,
+      cacheMissTokens: 0,
+      totalTokens: 0,
+      totalTurns: 0,
+      cacheHitRate: 0,
+    };
+
+    return {
+      accounts,
+      activeEmail,
+      quotas,
+      config,
+      logs,
+      patcher,
+      stats: {
+        today: todayStats,
+        hourly: hourlyStats,
+        daily: dailyStats,
+        weekly: weeklyStats,
+        monthly: monthlyStats,
+        conversations: conversationsList,
+        requests: requestsList,
+        allTime: allTimeSummary,
+        burnRate: this.statsManager?.getBurnRate(15) || { tokensPerMin: 0, recentTurns: 0 },
+      },
+    };
+  }
+
   private postState(): void {
     if (!this.view) return;
     if (!this.view.visible) {
@@ -73,59 +127,9 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
     }
     this.isDirty = false;
     try {
-      const accounts = this.tokenManager.getAccounts();
-      const activeEmail = this.tokenManager.getActiveEmail();
-      const quotas = this.quotaMonitor.getAllQuotas();
-      const config = this.tokenManager.getConfig();
-      const logs = this.logManager.getLogs();
-      const patcher = AutoRunPatcher.getStatus();
-      const todayStats = this.statsManager?.getTodayStats() || {
-        date: new Date().toISOString().slice(0, 10),
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheHitTokens: 0,
-        cacheMissTokens: 0,
-        totalTokens: 0,
-        models: {},
-        conversations: {},
-      };
-      const hourlyStats = this.statsManager?.getTodayHourlyStats() || [];
-      const dailyStats = this.statsManager?.getDailyStats(7) || [];
-      const weeklyStats = this.statsManager?.getWeeklyStats(4) || [];
-      const monthlyStats = this.statsManager?.getMonthlyStats(12) || [];
-      const conversationsList = this.statsManager?.getConversationsList(100) || [];
-      const requestsList = this.statsManager?.getRequestsList(100) || [];
-      const allTimeSummary = this.statsManager?.getAllTimeSummary() || {
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheHitTokens: 0,
-        cacheMissTokens: 0,
-        totalTokens: 0,
-        totalTurns: 0,
-        cacheHitRate: 0,
-      };
-
       void this.view.webview.postMessage({
         type: "state",
-        data: {
-          accounts,
-          activeEmail,
-          quotas,
-          config,
-          logs,
-          patcher,
-          stats: {
-            today: todayStats,
-            hourly: hourlyStats,
-            daily: dailyStats,
-            weekly: weeklyStats,
-            monthly: monthlyStats,
-            conversations: conversationsList,
-            requests: requestsList,
-            allTime: allTimeSummary,
-            burnRate: this.statsManager?.getBurnRate(15) || { tokensPerMin: 0, recentTurns: 0 },
-          },
-        },
+        data: this.getCurrentStateData(),
       });
     } catch (e: unknown) {
       this.log(`postState error: ${e instanceof Error ? e.message : String(e)}`);
@@ -221,6 +225,7 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
   }
 
   private getHtmlForWebview(): string {
+    const initialStateJson = JSON.stringify(this.getCurrentStateData()).replace(/</g, "\\u003c");
     return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';"><meta name="viewport" content="width=device-width,initial-scale=1.0"><style>
 :root {
   --bg: var(--vscode-sideBar-background, #1e1e2e);
@@ -282,7 +287,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); padd
 .card-warn { font-size: 9px; color: var(--warn); line-height: 1.25; margin-top: 2px; }
 
 .card-meta { font-size: 9px; font-family: var(--mono); color: var(--dim); display: flex; align-items: center; gap: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: -1px; }
-.card-breakdown { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; background: transparent; border: none; padding: 0; margin-top: 1px; }
+.card-breakdown { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; background: transparent; border: none; padding: 0; margin-top: 1px; }
 .cb-item { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .cb-lbl { font-size: 8px; color: var(--dim); text-transform: uppercase; font-weight: 600; letter-spacing: 0.3px; }
 .cb-val { font-size: 10.5px; font-weight: 700; font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -362,6 +367,7 @@ g.bar-group:hover rect { filter: brightness(1.15); }
         <option value="cache_optimized" title="Cache Optimized: Maximizes inference cache hits by sticking to the active account until quota drops below 15%, minimizing latency and token consumption.">Cache Optimized</option>
         <option value="round_robin" title="Round Robin: Cycles through accounts evenly to distribute usage across the entire pool.">Round Robin</option>
       </select>
+      <span class="info-badge" title="OpenAG Rotation:&#10;&#10;Active Across All Strategies:&#10;• Tier Priority: Always burns Ultra/Pro/Plus accounts before touching Free tier accounts.&#10;• Timing Priority (Drain Window): Holds active account if its 5h window resets in &lt;=30 mins (&gt;5% quota) to consume capacity before refill.&#10;• Reserve Gating: Uses Primary pool until all drop to &lt;=10%, then unlocks Reserve pool.&#10;• Model Affinity: Routes prompts according to active model family (Gemini vs Claude/GPT-OSS).&#10;• 429 Interception: Sub-second auto-rotation on API rate limits.&#10;&#10;Selectable Strategies:&#10;• Auto-Highest: Selects highest quota with +1000 score bonus for &lt;=45m refills.&#10;• Cache Optimized: Holds active account while quota &gt;15% to maintain warm GPU prefix cache.&#10;• Round Robin: Cycles evenly across healthy accounts while respecting tier & timing.">!</span>
     </div>
     <div class="btn-row">
       <button class="btn btn-sec" data-action="refreshQuotas" title="Refresh quotas">Refresh</button>
@@ -372,7 +378,6 @@ g.bar-group:hover rect { filter: brightness(1.15); }
   <div class="sec-head">
     <div style="display:flex;align-items:center;gap:5px;">
       <span>Accounts Pool</span>
-      <span class="info-badge" title="OpenAG Rotation:&#10;&#10;Active Across All Strategies:&#10;• Tier Priority: Always burns Ultra/Pro/Plus accounts before touching Free tier accounts.&#10;• Timing Priority (Drain Window): Holds active account if its 5h window resets in <=30 mins (>5% quota) to consume capacity before refill.&#10;• Reserve Gating: Uses Primary pool until all drop to <=10%, then unlocks Reserve pool.&#10;• Model Affinity: Routes prompts according to active model family (Gemini vs Claude/GPT-OSS).&#10;• 429 Interception: Sub-second auto-rotation on API rate limits.&#10;&#10;Selectable Strategies:&#10;• Auto-Highest: Selects highest quota with +1000 score bonus for <=45m refills.&#10;• Cache Optimized: Holds active account while quota >15% to maintain warm GPU prefix cache.&#10;• Round Robin: Cycles evenly across healthy accounts while respecting tier & timing.">!</span>
     </div>
     <div style="display:flex;align-items:center;gap:4px;">
       <span id="acc-count" style="font-size:9px;font-family:var(--mono);color:var(--dim);">0 accounts</span>
@@ -455,7 +460,10 @@ g.bar-group:hover rect { filter: brightness(1.15); }
   <div class="h-scroll-box" id="request-breakdown"></div>
 
   <div class="sec-head">
-    <span>Usage by Model</span>
+    <div style="display:flex;align-items:center;gap:4px;">
+      <span>Usage by Model</span>
+      <span class="info-badge" title="This is showing model ID, not the model name">!</span>
+    </div>
     <div style="display:flex;align-items:center;gap:3px;">
       <span id="model-count" style="font-size:9px;font-family:var(--mono);color:var(--dim);">0 models</span>
       <select class="sort-select" id="sort-sel-models" data-action="changeSortField" data-section="models">
@@ -492,15 +500,7 @@ g.bar-group:hover rect { filter: brightness(1.15); }
 
 <script>
 var vscode = acquireVsCodeApi();
-var state = {
-  accounts: [],
-  activeEmail: "",
-  quotas: {},
-  config: {},
-  logs: [],
-  patcher: { patches: [] },
-  stats: { today: { totalTokens: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0, models: {}, conversations: {} }, hourly: [], daily: [], weekly: [], monthly: [], conversations: [], requests: [], allTime: { totalTokens: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, totalTurns: 0, cacheHitRate: 0 } }
-};
+var state = ${initialStateJson};
 var currentView = "home";
 var statsRange = "today";
 var selectedBarIndex = null;
@@ -827,15 +827,17 @@ function renderStatsWidget() {
   if (!container) return;
   var s = (state && state.stats) || {};
   var t = s.today || { totalTokens: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, thinkingTokens: 0, contentTokens: 0 };
+  var hasTokens = (t.totalTokens || 0) > 0;
   var tot = t.totalTokens || 1;
-  var pCac = Math.round(((t.cacheHitTokens || 0) / tot) * 100);
-  var pInp = Math.round(((t.cacheMissTokens || Math.max(0, (t.inputTokens || 0) - (t.cacheHitTokens || 0))) / tot) * 100);
-  var pThk = Math.round(((t.thinkingTokens || 0) / tot) * 100);
-  var pOut = Math.max(0, 100 - pCac - pInp - pThk);
+  var pCac = hasTokens ? Math.round(((t.cacheHitTokens || 0) / tot) * 100) : 0;
+  var pInp = hasTokens ? Math.round(((t.cacheMissTokens || Math.max(0, (t.inputTokens || 0) - (t.cacheHitTokens || 0))) / tot) * 100) : 0;
+  var pThk = hasTokens ? Math.round(((t.thinkingTokens || 0) / tot) * 100) : 0;
+  var pOut = hasTokens ? Math.max(0, 100 - pCac - pInp - pThk) : 0;
+  var cacHover = 'Cache Hit: ' + fmtNum(t.cacheHitTokens || 0) + ' (' + (t.cacheHitTokens || 0).toLocaleString() + ' tokens)';
 
   var breakdownHtml = '<div class="cb-item"><span class="cb-lbl">In</span><span class="cb-val" style="color:var(--input-col);">' + fmtNum(t.inputTokens || 0) + '</span></div>' +
-    '<div class="cb-item"><span class="cb-lbl">Out</span><span class="cb-val" style="color:var(--output-col);">' + fmtNum(t.outputTokens || 0) + '</span></div>' +
-    '<div class="cb-item"><span class="cb-lbl">Cache <b style="opacity:0.8;font-weight:600;">(' + pCac + '%)</b></span><span class="cb-val" style="color:var(--cached);">' + fmtNum(t.cacheHitTokens || 0) + '</span></div>';
+    '<div class="cb-item"><span class="cb-lbl">Out</span><span class="cb-val" style="color:var(--output-col);">' + fmtNum(t.contentTokens || ((t.outputTokens || 0) - (t.thinkingTokens || 0))) + '</span></div>' +
+    '<div class="cb-item" title="' + esc(cacHover) + '"><span class="cb-lbl">Cache</span><span class="cb-val" style="color:var(--cached);">' + fmtNum(t.cacheHitTokens || 0) + '</span></div>';
   if ((t.thinkingTokens || 0) > 0) {
     breakdownHtml += '<div class="cb-item"><span class="cb-lbl">Thinking</span><span class="cb-val" style="color:var(--thinking-col);">' + fmtNum(t.thinkingTokens || 0) + '</span></div>';
   }
@@ -844,7 +846,7 @@ function renderStatsWidget() {
     '<div class="card-head">' +
       '<div style="display:flex;align-items:center;gap:4px;overflow:hidden;flex:1;min-width:0;">' +
         '<span class="tier-tag">STATS</span>' +
-        '<span style="font-size:10.5px;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Today: ' + fmtNum(t.totalTokens || 0) + '</span>' +
+        '<span style="font-size:10.5px;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Today: ' + fmtNum(t.totalTokens || 0) + ' <span style="font-size:9.5px;font-weight:700;color:var(--cached);" title="' + esc(cacHover) + '">(' + pCac + '%)</span></span>' +
       '</div>' +
       '<button class="btn btn-sec" data-action="nav" data-view="stats" style="font-size:9.5px;padding:2px 6px;flex-shrink:0;">Stats &rarr;</button>' +
     '</div>' +
@@ -854,11 +856,11 @@ function renderStatsWidget() {
       '<div class="seg-thk" style="width:' + pThk + '%;" title="Thinking: ' + fmtNum(t.thinkingTokens || 0) + '"></div>' +
       '<div class="seg-out" style="width:' + pOut + '%;" title="Output: ' + fmtNum(t.contentTokens || ((t.outputTokens || 0) - (t.thinkingTokens || 0))) + '"></div>' +
     '</div>' +
-    '<div class="card-breakdown" style="' + ((t.thinkingTokens || 0) > 0 ? 'grid-template-columns:repeat(4,1fr);' : '') + '">' +
+    '<div class="card-breakdown" style="' + ((t.thinkingTokens || 0) > 0 ? 'grid-template-columns:repeat(4,1fr);' : 'grid-template-columns:repeat(3,1fr);') + '">' +
       breakdownHtml +
     '</div>' +
     (s.burnRate && s.burnRate.tokensPerMin > 0
-      ? ('<div class="card-meta" style="margin-top:3px;font-size:8.5px;color:var(--dim);border-top:1px solid var(--border);padding-top:3px;">Burn Rate: <strong style="color:var(--text);font-family:var(--mono);">~' + fmtTokens(s.burnRate.tokensPerMin) + '/min</strong> (' + s.burnRate.recentTurns + ' turns in 15m)</div>')
+      ? ('<div class="card-meta" style="margin-top:3px;font-size:8.5px;color:var(--dim);border-top:1px solid var(--border);padding-top:3px;">Burn Rate: <strong style="color:var(--text);font-family:var(--mono);">~' + fmtNum(s.burnRate.tokensPerMin) + '/min</strong> (' + s.burnRate.recentTurns + ' turns in 15m)</div>')
       : '') +
   '</div>';
 }
@@ -1006,13 +1008,14 @@ function renderStatsPage() {
 
   var allTimeGrid = document.getElementById("alltime-grid");
   if (allTimeGrid) {
+    var promptCacHover = 'Cache Hit: ' + fmtNum(rangeTotalHit) + ' (' + rangeTotalHit.toLocaleString() + ' tokens)';
     var thkMetricHtml = rangeTotalThk > 0
       ? '<div class="stat-box"><span class="stat-lbl">Thinking Depth</span><span class="stat-val" style="color:var(--thinking-col);">' + fmtNum(rangeTotalThk) + '</span></div>'
       : '<div class="stat-box"><span class="stat-lbl">Cache Hit Rate</span><span class="stat-val" style="color:var(--cached);">' + fmtNum(rangeTotalHit) + ' <span style="font-size:10px;font-weight:600;color:var(--dim);">(' + rangeHitRate + '%)</span></span></div>';
 
     allTimeGrid.innerHTML =
       '<div class="stat-box"><span class="stat-lbl">Processed</span><span class="stat-val">' + fmtNum(rangeTotalTokens) + '</span></div>' +
-      '<div class="stat-box"><span class="stat-lbl">Prompt Input</span><span class="stat-val" style="color:var(--input-col);">' + fmtNum(rangeTotalInp) + '</span></div>' +
+      '<div class="stat-box" title="' + esc(promptCacHover) + '"><span class="stat-lbl">Prompt Input</span><span class="stat-val" style="color:var(--input-col);">' + fmtNum(rangeTotalInp) + ' <span style="font-size:10px;font-weight:600;color:var(--cached);">(' + rangeHitRate + '%)</span></span></div>' +
       '<div class="stat-box"><span class="stat-lbl">Completion Output</span><span class="stat-val" style="color:var(--output-col);">' + fmtNum(rangeTotalOut) + '</span></div>' +
       thkMetricHtml;
   }
@@ -1083,8 +1086,9 @@ function renderStatsPage() {
       var modelTag = r.model || "Gemini";
       var thkVal = r.thinkingTokens || 0;
       var outVal = (r.contentTokens || r.outputTokens || 0) - thkVal;
-      var cbColumns = thkVal > 0 ? 'grid-template-columns:repeat(4,1fr);' : 'grid-template-columns:repeat(3,1fr);';
+      var cbColumns = thkVal > 0 ? 'grid-template-columns:repeat(3,1fr);' : 'grid-template-columns:repeat(2,1fr);';
       var thkItem = thkVal > 0 ? '<div class="cb-item"><span class="cb-lbl">Thk</span><span class="cb-val" style="color:var(--thinking-col);">' + fmtNum(thkVal) + '</span></div>' : '';
+      var rCacHover = 'Cache Hit: ' + fmtNum(r.cacheHitTokens || 0) + ' (' + (r.cacheHitTokens || 0).toLocaleString() + ' tokens)';
 
       return '<div class="square-card">' +
         '<div class="card-head" style="align-items:flex-start;">' +
@@ -1093,13 +1097,12 @@ function renderStatsPage() {
         '<div class="card-title" title="' + esc(r.promptPreview || "") + '" style="font-size:9.5px;font-weight:500;color:var(--text);">' + esc(r.promptPreview || "User Prompt") + '</div>' +
         '<div style="display:flex;align-items:baseline;justify-content:space-between;margin:1px 0;">' +
           '<span style="font-size:8px;color:var(--dim);text-transform:uppercase;font-weight:600;">Tokens</span>' +
-          '<span style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--text);">' + fmtNum(r.totalTokens || 0) + ' <span style="font-size:10px;font-weight:700;color:var(--cached);">(' + hitRate + '%)</span></span>' +
+          '<span style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--text);">' + fmtNum(r.totalTokens || 0) + ' <span style="font-size:10px;font-weight:700;color:var(--cached);" title="' + esc(rCacHover) + '">(' + hitRate + '%)</span></span>' +
         '</div>' +
         '<div class="card-meta">' + tCount + (tCount === 1 ? " turn" : " turns") + ' &bull; ' + dateStr + (timeStr ? ' ' + timeStr : '') + '</div>' +
         '<div class="card-breakdown" style="' + cbColumns + '">' +
-          '<div class="cb-item"><span class="cb-lbl">In</span><span class="cb-val" style="color:var(--input-col);">' + fmtNum(r.inputTokens || 0) + '</span></div>' +
+          '<div class="cb-item" title="' + esc(rCacHover) + '"><span class="cb-lbl">In</span><span class="cb-val" style="color:var(--input-col);">' + fmtNum(r.inputTokens || 0) + '</span></div>' +
           '<div class="cb-item"><span class="cb-lbl">Out</span><span class="cb-val" style="color:var(--output-col);">' + fmtNum(outVal > 0 ? outVal : r.outputTokens || 0) + '</span></div>' +
-          '<div class="cb-item"><span class="cb-lbl">Cache</span><span class="cb-val" style="color:var(--cached);">' + fmtNum(r.cacheHitTokens || 0) + '</span></div>' +
           thkItem +
         '</div>' +
       '</div>';
@@ -1157,22 +1160,22 @@ function renderStatsPage() {
       var mHitRate = b.inp > 0 ? Math.round(((b.hit || 0) / b.inp) * 100) : 0;
       var mThkVal = b.thk || 0;
       var mOutVal = b.out - mThkVal;
-      var mCbCols = mThkVal > 0 ? 'grid-template-columns:repeat(4,1fr);' : 'grid-template-columns:repeat(3,1fr);';
+      var mCbCols = mThkVal > 0 ? 'grid-template-columns:repeat(3,1fr);' : 'grid-template-columns:repeat(2,1fr);';
       var mThkItem = mThkVal > 0 ? '<div class="cb-item"><span class="cb-lbl">Thk</span><span class="cb-val" style="color:var(--thinking-col);">' + fmtNum(mThkVal) + '</span></div>' : '';
+      var mCacHover = 'Cache Hit: ' + fmtNum(b.hit || 0) + ' (' + (b.hit || 0).toLocaleString() + ' tokens)';
 
       return '<div class="square-card">' +
         '<div class="card-head" style="align-items:flex-start;">' +
-          '<span class="tier-tag">MODEL</span>' +
+          '<span class="tier-tag" title="This is showing model ID, not the model name">MODEL</span>' +
         '</div>' +
         '<div class="card-title" title="' + esc(m) + '" style="font-size:10px;font-weight:600;color:var(--text);">' + esc(m) + '</div>' +
         '<div style="display:flex;align-items:baseline;justify-content:space-between;margin:1px 0;">' +
           '<span style="font-size:8px;color:var(--dim);text-transform:uppercase;font-weight:600;">Volume</span>' +
-          '<span style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--text);">' + fmtNum(b.total) + ' <span style="font-size:10px;font-weight:700;color:var(--cached);">(' + mHitRate + '%)</span></span>' +
+          '<span style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--text);">' + fmtNum(b.total) + ' <span style="font-size:10px;font-weight:700;color:var(--cached);" title="' + esc(mCacHover) + '">(' + mHitRate + '%)</span></span>' +
         '</div>' +
         '<div class="card-breakdown" style="margin-top:2px;' + mCbCols + '">' +
-          '<div class="cb-item"><span class="cb-lbl">In</span><span class="cb-val" style="color:var(--input-col);">' + fmtNum(b.inp) + '</span></div>' +
+          '<div class="cb-item" title="' + esc(mCacHover) + '"><span class="cb-lbl">In</span><span class="cb-val" style="color:var(--input-col);">' + fmtNum(b.inp) + '</span></div>' +
           '<div class="cb-item"><span class="cb-lbl">Out</span><span class="cb-val" style="color:var(--output-col);">' + fmtNum(mOutVal > 0 ? mOutVal : b.out) + '</span></div>' +
-          '<div class="cb-item"><span class="cb-lbl">Cache</span><span class="cb-val" style="color:var(--cached);">' + fmtNum(b.hit || 0) + '</span></div>' +
           mThkItem +
         '</div>' +
       '</div>';
@@ -1214,6 +1217,11 @@ function renderStatsPage() {
       var cTimeStr = c.lastActive ? new Date(c.lastActive).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
       var cTurns = c.turnCount || 1;
       var cHitRate = (c.inputTokens && c.inputTokens > 0) ? Math.round(((c.cacheHitTokens || 0) / c.inputTokens) * 100) : 0;
+      var cThkVal = c.thinkingTokens || 0;
+      var cOutVal = (c.contentTokens || c.outputTokens || 0) - cThkVal;
+      var cCbCols = cThkVal > 0 ? 'grid-template-columns:repeat(3,1fr);' : 'grid-template-columns:repeat(2,1fr);';
+      var cThkItem = cThkVal > 0 ? '<div class="cb-item"><span class="cb-lbl">Thk</span><span class="cb-val" style="color:var(--thinking-col);">' + fmtNum(cThkVal) + '</span></div>' : '';
+      var cCacHover = 'Cache Hit: ' + fmtNum(c.cacheHitTokens || 0) + ' (' + (c.cacheHitTokens || 0).toLocaleString() + ' tokens)';
       var modelNames = (c.models && typeof c.models === "object") ? Object.keys(c.models).filter(Boolean) : [];
       if (!modelNames.length && c.model) modelNames = [c.model];
       if (!modelNames.length) modelNames = ["Gemini"];
@@ -1226,13 +1234,13 @@ function renderStatsPage() {
         '<div class="card-title" title="' + esc(c.title || "") + '" style="font-size:9.5px;font-weight:500;color:var(--text);">' + esc(c.title || (c.id ? c.id.slice(0,8) : "Session")) + '</div>' +
         '<div style="display:flex;align-items:baseline;justify-content:space-between;margin:1px 0;">' +
           '<span style="font-size:8px;color:var(--dim);text-transform:uppercase;font-weight:600;">Tokens</span>' +
-          '<span style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--text);">' + fmtNum(c.totalTokens || 0) + ' <span style="font-size:10px;font-weight:700;color:var(--cached);">(' + cHitRate + '%)</span></span>' +
+          '<span style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--text);">' + fmtNum(c.totalTokens || 0) + ' <span style="font-size:10px;font-weight:700;color:var(--cached);" title="' + esc(cCacHover) + '">(' + cHitRate + '%)</span></span>' +
         '</div>' +
         '<div class="card-meta">' + cTurns + (cTurns === 1 ? " turn" : " turns") + ' &bull; ' + cDateStr + (cTimeStr ? ' ' + cTimeStr : '') + '</div>' +
-        '<div class="card-breakdown">' +
-          '<div class="cb-item"><span class="cb-lbl">In</span><span class="cb-val" style="color:var(--input-col);">' + fmtNum(c.inputTokens || 0) + '</span></div>' +
-          '<div class="cb-item"><span class="cb-lbl">Out</span><span class="cb-val" style="color:var(--output-col);">' + fmtNum(c.outputTokens || 0) + '</span></div>' +
-          '<div class="cb-item"><span class="cb-lbl">Cache</span><span class="cb-val" style="color:var(--cached);">' + fmtNum(c.cacheHitTokens || 0) + '</span></div>' +
+        '<div class="card-breakdown" style="' + cCbCols + '">' +
+          '<div class="cb-item" title="' + esc(cCacHover) + '"><span class="cb-lbl">In</span><span class="cb-val" style="color:var(--input-col);">' + fmtNum(c.inputTokens || 0) + '</span></div>' +
+          '<div class="cb-item"><span class="cb-lbl">Out</span><span class="cb-val" style="color:var(--output-col);">' + fmtNum(cOutVal > 0 ? cOutVal : c.outputTokens || 0) + '</span></div>' +
+          cThkItem +
         '</div>' +
       '</div>';
     }).join("") : '<div class="empty" style="width:100%;">No sessions in this period.</div>';
@@ -1254,7 +1262,8 @@ setInterval(function() {
 function renderLogs() {
   var el = document.getElementById("log-scroll");
   if (!el) return;
-  var logs = (state && Array.isArray(state.logs)) ? state.logs.filter(Boolean) : [];
+  var rawLogs = (state && Array.isArray(state.logs)) ? state.logs.filter(Boolean) : [];
+  var logs = rawLogs.length > 200 ? rawLogs.slice(rawLogs.length - 200) : rawLogs;
   var logCountEl = document.getElementById("log-count");
   if (logCountEl) logCountEl.textContent = logs.length + " logs";
   if (!logs.length) {
