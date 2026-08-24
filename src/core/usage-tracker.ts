@@ -3,7 +3,7 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import type { ContextUsage } from "../types.js";
 import { aggregateBlockTokens, readGenMetadata } from "./gen-metadata-reader.js";
-import { BRAIN_DIR, CONV_DIR, loadSqlite } from "./sqlite-utils.js";
+import { BRAIN_DIR, CONV_DIR, withSqliteDb } from "./sqlite-utils.js";
 import {
   extractAntigravityTitle,
   formatDynamicModelName,
@@ -11,16 +11,29 @@ import {
   type StatsManager,
 } from "./stats-manager.js";
 
-function normalizePath(p: string): string {
+export function normalizePath(p: string): string {
   if (!p) return "";
   try {
     p = decodeURIComponent(p);
   } catch { /* ignore */ }
-  return p.replace(/\\/g, "/").toLowerCase().replace(/^file:\/\/\/?/, "").replace(/^\/+/, "").replace(/\/$/, "");
+
+  let norm = p.replace(/\\/g, "/").toLowerCase().trim();
+
+  // Strip known URI schemes
+  norm = norm.replace(/^(?:vscode-remote|file):\/\//, "");
+
+  // Strip WSL or remote authorities (e.g. wsl+ubuntu/, wsl%2bubuntu/, wsl$/, wsl.localhost/, ssh-remote+.../)
+  norm = norm.replace(/^(?:wsl\+|wsl%2b|ssh-remote\+|dev-container\+)[^/]+\//, "");
+  norm = norm.replace(/^(?:wsl\$|wsl\.localhost)\/[^/]+\//, "");
+
+  // Strip leading and trailing slashes
+  norm = norm.replace(/^\/+/, "").replace(/\/+$/, "");
+
+  return norm;
 }
 
-function extractUriFromText(text: string): string | null {
-  const m = text.match(/file:\/\/\/[-a-zA-Z0-9_.:~%+/]+/i);
+export function extractUriFromText(text: string): string | null {
+  const m = text.match(/(?:file|vscode-remote):\/\/[a-zA-Z0-9_.:~%+/$-]+/i);
   return m ? normalizePath(m[0]) : null;
 }
 
@@ -40,6 +53,8 @@ export class UsageTracker {
   private lastProcessedLineCount = 0;
   private lastProcessedPath: string | null = null;
   private lastProcessedGenIdx = 0;
+  private lastReportedRateLimitLine = -1;
+  private lastRateLimitTime = 0;
   private isComputing = false;
 
   private readonly dbWorkspaceCache = new Map<string, { mtime: number; size: number; uri: string | null }>();
@@ -51,6 +66,9 @@ export class UsageTracker {
 
   private readonly onContextChangeEmitter = new vscode.EventEmitter<ContextUsage>();
   public readonly onContextChange = this.onContextChangeEmitter.event;
+
+  private readonly onRateLimitEmitter = new vscode.EventEmitter<{ model: string; error: string }>();
+  public readonly onRateLimit = this.onRateLimitEmitter.event;
 
   constructor(private readonly statsManager?: StatsManager) {
     this.initWatchers();
@@ -160,29 +178,30 @@ export class UsageTracker {
         return cached.uri;
       }
 
-      let uri: string | null = null;
-      const sqlite = loadSqlite();
-
-      if (sqlite) {
-        try {
-          const db = new sqlite.DatabaseSync(dbPath, { readOnly: true, open: true });
-          const row = db.prepare("SELECT data FROM trajectory_metadata_blob WHERE id=?").get<{ data?: Uint8Array | Buffer }>("main");
-          db.close();
-          if (row?.data) {
-            uri = extractUriFromText(Buffer.from(row.data).toString("utf-8"));
-          }
-        } catch { /* ignore */ }
-      }
+      let uri = withSqliteDb(dbPath, (db) => {
+        const row = db.prepare("SELECT data FROM trajectory_metadata_blob WHERE id=?").get<{ data?: Uint8Array | Buffer }>("main");
+        return row?.data ? extractUriFromText(Buffer.from(row.data).toString("utf-8")) : null;
+      });
 
       if (!uri) {
+        let fd: number | null = null;
         try {
-          const fd = fs.openSync(dbPath, "r");
+          fd = fs.openSync(dbPath, "r");
           const readLen = Math.min(st.size, 65536);
           const buf = Buffer.alloc(readLen);
           fs.readSync(fd, buf, 0, readLen, 0);
-          fs.closeSync(fd);
           uri = extractUriFromText(buf.toString("utf-8"));
-        } catch { /* ignore */ }
+        } catch {
+          // Ignore binary scan fallback error
+        } finally {
+          if (fd !== null) {
+            try {
+              fs.closeSync(fd);
+            } catch {
+              // Ignore close error
+            }
+          }
+        }
       }
 
       this.dbWorkspaceCache.set(dbPath, { mtime: st.mtimeMs, size: st.size, uri });
@@ -271,6 +290,20 @@ export class UsageTracker {
 
       this.onContextChangeEmitter.fire(this.currentUsage);
 
+      if (
+        parsed.rateLimitErrorLine >= 0 &&
+        parsed.rateLimitErrorLine > this.lastReportedRateLimitLine &&
+        parsed.rateLimitErrorLine >= lines.length - 3 &&
+        Date.now() - this.lastRateLimitTime > 5000
+      ) {
+        this.lastReportedRateLimitLine = parsed.rateLimitErrorLine;
+        this.lastRateLimitTime = Date.now();
+        this.onRateLimitEmitter.fire({
+          model: this.activeModel,
+          error: parsed.rateLimitErrorDetail || "RESOURCE_EXHAUSTED",
+        });
+      }
+
       // Record completed request blocks with exact gen_metadata token counts
       if (this.statsManager && this.activeConversationId) {
         const turns = genMetrics?.turns || [];
@@ -301,6 +334,8 @@ export class UsageTracker {
               block.promptText,
               block.timestamp,
               block.turnCount,
+              agg.thinkingTokens,
+              agg.contentTokens,
             );
           }
         }
@@ -331,5 +366,6 @@ export class UsageTracker {
     }
     this.dbWorkspaceCache.clear();
     this.onContextChangeEmitter.dispose();
+    this.onRateLimitEmitter.dispose();
   }
 }

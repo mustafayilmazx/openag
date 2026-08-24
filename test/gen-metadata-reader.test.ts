@@ -81,21 +81,25 @@ describe("GenMetadataReader", () => {
   test("aggregateBlockTokens correctly filters by turn indices and aggregates metrics", async () => {
     const { aggregateBlockTokens } = await import("../src/core/gen-metadata-reader.js");
     const mockTurns = [
-      { idx: 1, model: "gemini-3.7-flash", modelId: 1, newInputTokens: 2000, outputTokens: 200, cachedInputTokens: 50000, thinkingTokens: 0, contentTokens: 200, requestId: "r1", maxOutputTokens: 8192, temperature: 0 },
-      { idx: 2, model: "gemini-3.7-flash", modelId: 1, newInputTokens: 500, outputTokens: 300, cachedInputTokens: 52000, thinkingTokens: 0, contentTokens: 300, requestId: "r2", maxOutputTokens: 8192, temperature: 0 },
-      { idx: 3, model: "gemini-3.7-flash", modelId: 1, newInputTokens: 1000, outputTokens: 500, cachedInputTokens: 60000, thinkingTokens: 0, contentTokens: 500, requestId: "r3", maxOutputTokens: 8192, temperature: 0 },
+      { idx: 0, model: "gemini-3.7-flash", modelId: 1, newInputTokens: 2000, outputTokens: 200, cachedInputTokens: 50000, thinkingTokens: 150, contentTokens: 50, requestId: "r1", maxOutputTokens: 8192, temperature: 0 },
+      { idx: 1, model: "gemini-3.7-flash", modelId: 1, newInputTokens: 500, outputTokens: 300, cachedInputTokens: 52000, thinkingTokens: 200, contentTokens: 100, requestId: "r2", maxOutputTokens: 8192, temperature: 0 },
+      { idx: 2, model: "gemini-3.7-flash", modelId: 1, newInputTokens: 1000, outputTokens: 500, cachedInputTokens: 60000, thinkingTokens: 400, contentTokens: 100, requestId: "r3", maxOutputTokens: 8192, temperature: 0 },
     ];
 
-    const block1 = aggregateBlockTokens(mockTurns, 1, 2);
+    const block1 = aggregateBlockTokens(mockTurns, 0, 1);
     expect(block1.inputTokens).toBe(52500); // last turn cached (52000) + new (500)
     expect(block1.cacheHitTokens).toBe(52000);
     expect(block1.cacheMissTokens).toBe(500);
     expect(block1.outputTokens).toBe(500); // 200 + 300
-    expect(block1.maxGenIdx).toBe(2);
+    expect(block1.thinkingTokens).toBe(350); // 150 + 200
+    expect(block1.contentTokens).toBe(150); // 50 + 100
+    expect(block1.maxGenIdx).toBe(1);
 
-    const block2 = aggregateBlockTokens(mockTurns, 3, 3);
+    const block2 = aggregateBlockTokens(mockTurns, 2, 2);
     expect(block2.inputTokens).toBe(61000);
     expect(block2.outputTokens).toBe(500);
-    expect(block2.maxGenIdx).toBe(3);
+    expect(block2.thinkingTokens).toBe(400);
+    expect(block2.contentTokens).toBe(100);
+    expect(block2.maxGenIdx).toBe(2);
   });
 });

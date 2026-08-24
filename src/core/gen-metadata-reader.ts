@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { CONV_DIR, loadSqlite } from "./sqlite-utils.js";
+import { CONV_DIR, withSqliteDb } from "./sqlite-utils.js";
 
 export interface GenTurnMetrics {
   idx: number;
@@ -167,19 +167,13 @@ function queryGenRows(conversationId: string, sinceIdx?: number): GenRow[] {
   const dbPath = path.join(CONV_DIR, `${conversationId}.db`);
   if (!fs.existsSync(dbPath)) return [];
 
-  const sqlite = loadSqlite();
-  if (!sqlite) return [];
-
-  try {
-    const db = new sqlite.DatabaseSync(dbPath, { readOnly: true, open: true });
-    const rows = sinceIdx !== undefined
+  const rows = withSqliteDb(dbPath, (db) => {
+    return sinceIdx !== undefined
       ? db.prepare("SELECT idx, data FROM gen_metadata WHERE idx > ? ORDER BY idx ASC").all<GenRow>(sinceIdx)
       : db.prepare("SELECT idx, data FROM gen_metadata ORDER BY idx ASC").all<GenRow>();
-    db.close();
-    return rows;
-  } catch {
-    return [];
-  }
+  });
+
+  return rows || [];
 }
 
 function parseRows(rows: GenRow[]): GenTurnMetrics[] {
@@ -234,6 +228,8 @@ export interface BlockTokens {
   outputTokens: number;
   cacheHitTokens: number;
   cacheMissTokens: number;
+  thinkingTokens: number;
+  contentTokens: number;
   model: string;
   maxGenIdx: number;
 }
@@ -243,8 +239,17 @@ export function aggregateBlockTokens(
   startTurnIdx: number,
   endTurnIdx: number,
 ): BlockTokens {
-  const result: BlockTokens = { inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0, model: "", maxGenIdx: 0 };
-  if (!turns || turns.length === 0 || startTurnIdx <= 0) return result;
+  const result: BlockTokens = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheHitTokens: 0,
+    cacheMissTokens: 0,
+    thinkingTokens: 0,
+    contentTokens: 0,
+    model: "",
+    maxGenIdx: 0,
+  };
+  if (!turns || turns.length === 0 || startTurnIdx < 0) return result;
 
   for (const turn of turns) {
     if (turn.idx < startTurnIdx || turn.idx > endTurnIdx) continue;
@@ -252,6 +257,8 @@ export function aggregateBlockTokens(
     result.outputTokens += turn.outputTokens;
     result.cacheHitTokens = turn.cachedInputTokens;
     result.cacheMissTokens = turn.newInputTokens;
+    result.thinkingTokens += turn.thinkingTokens || 0;
+    result.contentTokens += (turn.contentTokens || Math.max(0, turn.outputTokens - (turn.thinkingTokens || 0)));
     if (turn.model) result.model = turn.model;
     if (turn.idx > result.maxGenIdx) result.maxGenIdx = turn.idx;
   }
