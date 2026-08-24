@@ -2,7 +2,7 @@
   "name": "openag",
   "displayName": "OpenAG",
   "description": "Multi-account pool and quota rotation for Google Antigravity.",
-  "version": "1.3.2",
+  "version": "1.4.0",
   "publisher": "polystree",
   "author": "Polystree",
   "license": "MIT",
@@ -36,6 +36,9 @@
     "onStartupFinished"
   ],
   "main": "./dist/extension.js",
+  "extensionKind": [
+    "ui"
+  ],
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -84,6 +87,18 @@
       {
         "command": "openag.revertAutoRunFix",
         "title": "OpenAG: Revert Auto-Run Terminal Fix"
+      },
+      {
+        "command": "openag.exportPool",
+        "title": "OpenAG: Export Account Pool (Encrypted)"
+      },
+      {
+        "command": "openag.importPool",
+        "title": "OpenAG: Import Account Pool"
+      },
+      {
+        "command": "openag.quickStatus",
+        "title": "OpenAG: Quick Status & Account Switcher"
       }
     ]
   },
