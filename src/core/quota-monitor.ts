@@ -3,7 +3,8 @@ import type { Account, AccountQuota, AccountTier, FamilyQuota, ModelQuota, Quota
 import type { TokenManager } from "./token-manager.js";
 import type { UsageTracker } from "./usage-tracker.js";
 
-const ENDPOINT = "https://cloudcode-pa.googleapis.com";
+export const ENDPOINT_DAILY = "https://daily-cloudcode-pa.googleapis.com";
+export const ENDPOINT_PROD = "https://cloudcode-pa.googleapis.com";
 const CODE_ASSIST_BODY = JSON.stringify({ metadata: { ideType: "ANTIGRAVITY", ideVersion: "2.5.5" } });
 const FIVE_HOURS = 5 * 60 * 60 * 1000;
 const KEY_QUOTA_CACHE = "openag.quota_cache.v1";
@@ -161,22 +162,62 @@ export class QuotaMonitor {
     return acc ? this.fetchAccountQuota(acc) : null;
   }
 
+  private async postInternal(
+    path: string,
+    accessToken: string,
+    body: string,
+    isGcpTos = false,
+  ): Promise<Response> {
+    const primary = isGcpTos ? ENDPOINT_PROD : ENDPOINT_DAILY;
+    const fallback = isGcpTos ? ENDPOINT_DAILY : ENDPOINT_PROD;
+
+    try {
+      const res = await fetch(`${primary}${path}`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+          "User-Agent": "Antigravity/2.5.5",
+        },
+        body,
+        signal: AbortSignal.timeout(10000),
+      });
+      if (res.ok || res.status === 401) {
+        return res;
+      }
+      this.log(`Primary endpoint ${primary}${path} returned HTTP ${res.status}, trying fallback ${fallback}...`);
+    } catch (err: unknown) {
+      this.log(`Primary endpoint ${primary}${path} request error: ${err instanceof Error ? err.message : String(err)}, trying fallback...`);
+    }
+
+    return fetch(`${fallback}${path}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+        "User-Agent": "Antigravity/2.5.5",
+      },
+      body,
+      signal: AbortSignal.timeout(10000),
+    });
+  }
+
   public async fetchAccountQuota(account: Account, skipAutoRotation = false): Promise<AccountQuota | null> {
     if (!this.tokenManager.isExtensionEnabled()) return null;
     try {
       const accessToken = await this.tokenManager.getValidAccessToken(account);
-      await this.discoverModels(accessToken);
+      await this.discoverModels(accessToken, account.isGcpTos);
       const tier = await this.detectTier(account, accessToken);
       if (account.tier !== tier) {
         await this.tokenManager.updateAccountTier(account.email, tier);
       }
 
-      const res = await fetch(`${ENDPOINT}/v1internal:retrieveUserQuotaSummary`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json", "User-Agent": "Antigravity/2.5.5" },
-        body: JSON.stringify({ project: account.projectId || "" }),
-        signal: AbortSignal.timeout(10000),
-      });
+      const res = await this.postInternal(
+        "/v1internal:retrieveUserQuotaSummary",
+        accessToken,
+        JSON.stringify({ project: account.projectId || "" }),
+        account.isGcpTos,
+      );
 
       if (!res.ok) {
         const errText = await res.text();
@@ -195,7 +236,9 @@ export class QuotaMonitor {
 
         for (const grp of data.groups) {
           const name = grp.displayName || "";
-          const isClaude = this.categorizeFamily(name) === "claude";
+          const fam = this.categorizeFamily(name);
+          const isGrpClaude = fam === "claude";
+          const isGrpGemini = fam === "gemini";
           const buckets = grp.buckets || [];
 
           for (const b of buckets) {
@@ -204,10 +247,10 @@ export class QuotaMonitor {
             const is5h = bId.includes("5h") || bId.includes("hourly") || (b.window || "").includes("5h");
             const isWk = bId.includes("weekly") || (b.window || "").includes("week");
 
-            if (isClaude) {
+            if (isGrpClaude || bId.includes("3p") || bId.includes("claude")) {
               if (is5h) claude5h = { percent: pct, resetTime: b.resetTime };
               else if (isWk) claudeWeekly = { percent: pct, resetTime: b.resetTime };
-            } else {
+            } else if (isGrpGemini || bId.includes("gemini")) {
               if (is5h) gemini5h = { percent: pct, resetTime: b.resetTime };
               else if (isWk) geminiWeekly = { percent: pct, resetTime: b.resetTime };
             }
@@ -286,15 +329,10 @@ export class QuotaMonitor {
     return result;
   }
 
-  private async discoverModels(accessToken: string): Promise<void> {
+  private async discoverModels(accessToken: string, isGcpTos = false): Promise<void> {
     if (this.modelsDiscovered) return;
     try {
-      const res = await fetch(`${ENDPOINT}/v1internal:fetchAvailableModels`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json", "User-Agent": "Antigravity/2.5.5" },
-        body: JSON.stringify({}),
-        signal: AbortSignal.timeout(10000),
-      });
+      const res = await this.postInternal("/v1internal:fetchAvailableModels", accessToken, JSON.stringify({}), isGcpTos);
       if (!res.ok) return;
       // SAFETY: Available models endpoint response structure
       const data = (await res.json()) as { models?: Record<string, { maxTokens?: number }> };
@@ -307,12 +345,7 @@ export class QuotaMonitor {
 
   private async detectTier(account: Account, accessToken: string): Promise<AccountTier> {
     try {
-      const res = await fetch(`${ENDPOINT}/v1internal:loadCodeAssist`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json", "User-Agent": "Antigravity/2.5.5" },
-        body: CODE_ASSIST_BODY,
-        signal: AbortSignal.timeout(10000),
-      });
+      const res = await this.postInternal("/v1internal:loadCodeAssist", accessToken, CODE_ASSIST_BODY, account.isGcpTos);
       if (!res.ok) return account.tier || "pro";
       // SAFETY: Code assist subscription tier response payload
       const data = (await res.json()) as { paidTier?: { id?: string; name?: string }; tierId?: string; currentTier?: { id?: string; name?: string } };

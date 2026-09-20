@@ -559,11 +559,12 @@ export class TokenManager {
         refreshToken: active.refreshToken || "",
         expiryDateSeconds: active.tokenExpiresAt,
         tokenType: "Bearer",
-        isGcpTos: false,
+        isGcpTos: active.isGcpTos ?? false,
       });
       void (async () => {
         try {
-          await fetch("https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist", {
+          const endpoint = active.isGcpTos ? "https://cloudcode-pa.googleapis.com" : "https://daily-cloudcode-pa.googleapis.com";
+          await fetch(`${endpoint}/v1internal:loadCodeAssist`, {
             method: "POST",
             headers: {
               Authorization: `Bearer ${token}`,

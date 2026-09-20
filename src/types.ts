@@ -23,6 +23,7 @@ export interface Account {
   affinity?: ModelAffinity;
   role?: PoolRole;
   projectId?: string;
+  isGcpTos?: boolean;
   createdAt: number;
   updatedAt: number;
 }
