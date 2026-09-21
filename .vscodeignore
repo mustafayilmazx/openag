@@ -3,6 +3,7 @@
 .github/**
 src/**
 dist/**/*.map
+dist/openag.exe
 *.map
 *.vsix
 .oxlintrc.json
