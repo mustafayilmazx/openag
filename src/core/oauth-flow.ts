@@ -1,8 +1,40 @@
+import * as childProcess from "node:child_process";
 import * as crypto from "node:crypto";
 import * as http from "node:http";
-import * as vscode from "vscode";
 import type { OAuthTokens } from "../types.js";
 import { USSBridge } from "./uss-bridge.js";
+
+// SAFETY: Safely load vscode only when running inside extension host
+let vscodeModule: typeof import("vscode") | undefined;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  vscodeModule = require("vscode");
+} catch {
+  // Outside of VS Code (CLI / standalone mode)
+}
+
+export function openBrowserUrl(url: string): void {
+  if (vscodeModule?.env?.openExternal) {
+    void vscodeModule.env.openExternal(vscodeModule.Uri.parse(url)).then(
+      (opened) => { if (!opened && vscodeModule?.env?.clipboard) void vscodeModule.env.clipboard.writeText(url); },
+      () => { if (vscodeModule?.env?.clipboard) void vscodeModule.env.clipboard.writeText(url); },
+    );
+    return;
+  }
+  const platform = process.platform;
+  try {
+    if (platform === "win32") {
+      childProcess.execFile("powershell", ["-NoProfile", "-NonInteractive", "-Command", "Start-Process $args[0]", url]);
+    } else if (platform === "darwin") {
+      childProcess.execFile("open", [url]);
+    } else {
+      childProcess.execFile("xdg-open", [url]);
+    }
+  } catch {
+    // If opening browser fails, output to stdout
+    process.stdout.write(`Please open this URL in your browser:\n${url}\n`);
+  }
+}
 
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -117,10 +149,7 @@ export const OAuthFlow = {
         });
 
         const authUrl = `${GOOGLE_AUTH_URL}?${authParams.toString()}`;
-        void vscode.env.openExternal(vscode.Uri.parse(authUrl)).then(
-          (opened) => { if (!opened) void vscode.env.clipboard.writeText(authUrl); },
-          () => void vscode.env.clipboard.writeText(authUrl),
-        );
+        openBrowserUrl(authUrl);
         timeout = setTimeout(() => { cleanup(); reject(new Error("Login timed out after 3 minutes")); }, 180000);
       });
 

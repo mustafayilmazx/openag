@@ -16,7 +16,12 @@ export function isWsl(): boolean {
 }
 
 export function getPsExecutable(): string {
-  if (process.platform === "win32") return "powershell";
+  if (process.platform === "win32") {
+    const sysRoot = process.env.SystemRoot || "C:\\Windows";
+    const fullPath = `${sysRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
+    if (fs.existsSync(fullPath)) return fullPath;
+    return "powershell.exe";
+  }
   if (isWsl()) return "powershell.exe";
   return "powershell";
 }

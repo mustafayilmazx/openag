@@ -23,32 +23,19 @@ const KEY_ACCOUNTS = "openag.accounts.v1";
 const KEY_ACTIVE = "openag.active_account.v1";
 const KEY_CONFIG = "openag.config.v1";
 
-function resolveModelFamily(modelName?: string): "gemini" | "claude" | "other" {
-  if (!modelName) return "other";
-  const lower = modelName.toLowerCase();
-  if (
-    lower.includes("claude") ||
-    lower.includes("sonnet") ||
-    lower.includes("opus") ||
-    lower.includes("haiku") ||
-    lower.includes("gpt") ||
-    lower.includes("oss")
-  ) {
-    return "claude";
-  }
-  if (lower.includes("gemini")) {
-    return "gemini";
-  }
-  return "other";
-}
+import {
+  DRAIN_WINDOW_MS,
+  IMMINENT_RESET_MS,
+  matchesModelAffinity,
+  resolveModelFamily,
+} from "./model-affinity.js";
 
-const DRAIN_WINDOW_MS = 30 * 60 * 1000;
-const IMMINENT_RESET_MS = 45 * 60 * 1000;
-
-function matchesModelAffinity(account: Account, modelFamily: "gemini" | "claude" | "other"): boolean {
-  if (!account.affinity || account.affinity === "all" || modelFamily === "other") return true;
-  return account.affinity === modelFamily;
-}
+export {
+  DRAIN_WINDOW_MS,
+  IMMINENT_RESET_MS,
+  matchesModelAffinity,
+  resolveModelFamily,
+};
 
 export class TokenManager {
   private accounts: Account[] = [];

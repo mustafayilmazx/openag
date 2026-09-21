@@ -19,7 +19,7 @@ describe("QuotaMonitor endpoint routing and parsing", () => {
     const requestedUrls: string[] = [];
     const origFetch = globalThis.fetch;
 
-    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    globalThis.fetch = (async (input: RequestInfo | URL, _init?: RequestInit) => {
       const url = String(input);
       requestedUrls.push(url);
 

@@ -1,5 +1,13 @@
-import * as vscode from "vscode";
 import type { OAuthTokens } from "../types.js";
+
+// SAFETY: Safely load vscode only when running inside extension host
+let vscodeModule: typeof import("vscode") | undefined;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  vscodeModule = require("vscode");
+} catch {
+  // Outside of VS Code (CLI / standalone mode)
+}
 
 export interface ClientCredentials {
   clientId: string;
@@ -36,9 +44,10 @@ interface VSCodeWithUSS {
 }
 
 const getApi = (): AntigravityUSS | undefined => {
+  if (!vscodeModule) return undefined;
   // SAFETY: Antigravity IDE injects antigravityUnifiedStateSync onto vscode global namespace
   // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- IDE runtime global injection
-  const extVsCode = vscode as unknown as VSCodeWithUSS;
+  const extVsCode = vscodeModule as unknown as VSCodeWithUSS;
   return extVsCode.antigravityUnifiedStateSync;
 };
 
@@ -108,14 +117,16 @@ export const USSBridge = {
         }
       }
 
-      for (const cmd of [
-        "antigravity.refreshAuth",
-        "antigravity.refreshStatus",
-        "antigravity.syncState",
-        "antigravity.getUserStatus",
-        "jetski.refresh",
-      ]) {
-        try { void vscode.commands.executeCommand(cmd); } catch { /* ignore */ }
+      if (vscodeModule) {
+        for (const cmd of [
+          "antigravity.refreshAuth",
+          "antigravity.refreshStatus",
+          "antigravity.syncState",
+          "antigravity.getUserStatus",
+          "jetski.refresh",
+        ]) {
+          try { void vscodeModule.commands.executeCommand(cmd); } catch { /* ignore */ }
+        }
       }
       return true;
     } catch {

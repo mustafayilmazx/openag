@@ -110,12 +110,17 @@
       }
     ]
   },
+  "bin": {
+    "openag": "./dist/openag.js"
+  },
   "scripts": {
     "compile": "node esbuild.js",
     "compile:prod": "node esbuild.js --production",
+    "compile:cli": "bun build --compile src/cli/main.ts --outfile dist/openag.exe --external vscode",
+    "build:cli": "bun build src/cli/main.ts --outfile dist/openag.js --target node --external vscode",
     "watch": "node esbuild.js --watch",
     "typecheck": "tsc --noEmit",
-    "lint": "oxlint --config oxlint.config.ts",
+    "lint": "oxlint --config .oxlintrc.json",
     "test": "bun test",
     "package": "bun run compile:prod && vsce package --no-dependencies --no-rewrite-relative-links"
   },
